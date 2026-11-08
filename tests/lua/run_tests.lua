@@ -3076,6 +3076,120 @@ test("/bunny color reports custom vs style default", function()
 end)
 
 ----------------------------------------------------------------------------
+-- Regression: portrait ears with styles / optional fur colour (v0.3)
+----------------------------------------------------------------------------
+
+io.write("Portrait ears regression\n")
+
+-- "Interface\AddOns\BunnyBar\Textures\x.tga" -> does the file exist on disk?
+local function textureExists(path)
+    local rel = path:gsub("^Interface\\AddOns\\BunnyBar\\", ADDON_DIR .. "/"):gsub("\\", "/")
+    local f = io.open(rel, "rb")
+    if f then f:close() return true end
+    return false
+end
+
+local function earLayers(ns2, key)
+    local o = ns2.Ears.GetState()[key or "player"].overlay
+    local fur, detail
+    for _, ch in ipairs(o._children) do
+        if ch._texture then if not fur then fur = ch else detail = ch end end
+    end
+    return fur, detail, o
+end
+
+local ALL_STYLES = { "classic", "devil", "angel", "dragon", "zombie" }
+
+test("every texture requested at login exists, for every saved style", function()
+    for _, id in ipairs(ALL_STYLES) do
+        local ns2 = boot({ schema = 4, variation = id },
+            { setup = function() mkPlayer(100, 900, 60); mkParty(2); mkLayeredPlayer() end })
+        slash("test burrow"); mock.advance(3)       -- burrow holes
+        slash("test hearts"); mock.advance(0.5)     -- heart particles
+        local n = 0
+        for path in pairs(mock.texturePaths) do
+            n = n + 1
+            truthy(textureExists(path), id .. ": missing texture " .. path)
+        end
+        local T = "Interface\\AddOns\\BunnyBar\\Textures\\"
+        truthy(mock.texturePaths[T .. "bunny-ears.tga"], id .. ": ears requested")
+        truthy(mock.texturePaths[T .. "bunny-burrow-fx.tga"], id .. ": burrow holes requested")
+        truthy(n >= 4, id .. ": textures requested " .. n)
+    end
+end)
+
+test("portrait ears load the shared texture with every saved style", function()
+    for _, id in ipairs(ALL_STYLES) do
+        local ns2 = boot({ schema = 4, variation = id },
+            { setup = function() mkPlayer(100, 900, 60); mkParty(2) end })
+        for _, key in ipairs({ "player", "party1", "party2" }) do
+            local e = ns2.Ears.GetState()[key]
+            eq(e.shown, true, id .. " " .. key .. " shown")
+            local fur, detail = earLayers(ns2, key)
+            eq(fur._texture, "Interface\\AddOns\\BunnyBar\\Textures\\bunny-ears.tga", id .. " " .. key)
+            eq(detail._texture, fur._texture)
+            truthy(textureExists(fur._texture))
+            eq(hexOf(fur:GetVertexColor()), STYLE_DEFAULTS[id], id .. " " .. key .. " tinted with the style default")
+            eq(detail._vertex, nil)
+        end
+    end
+end)
+
+test("portrait ear tint follows every colour path", function()
+    local ns2, c = bootPanel({ schema = 4 }, function() mkPlayer(100, 900, 60); mkParty(1) end)
+    local function earsAre(hex, why)
+        for _, key in ipairs({ "player", "party1" }) do
+            eq(hexOf(earLayers(ns2, key):GetVertexColor()), hex, why .. " (" .. key .. ")")
+        end
+        eq(hexOf(bunnyLayers():GetVertexColor()), hex, why .. " (bunny)")
+    end
+    earsAre("F6F3FA", "no custom colour")
+    slash("color #87CEEB"); earsAre("87CEEB", "custom colour")
+    slash("color #FFFFFF"); earsAre("FFFFFF", "explicit white")
+    eq(BunnyBarDB.furColor, "FFFFFF")
+    slash("style devil"); earsAre("FFFFFF", "custom kept on style change")
+    c.reset:Click(); earsAre("E06E7C", "panel Reset Color -> devil default")
+    slash("style zombie"); earsAre("A9C4A2", "style change without override")
+    slash("color #123456"); slash("color reset"); earsAre("A9C4A2", "/bunny color reset")
+    -- /reload with the saved state
+    local saved = BunnyBarDB
+    local ns3 = boot(saved, { setup = function() mkPlayer(100, 900, 60) end })
+    eq(hexOf(earLayers(ns3):GetVertexColor()), "A9C4A2", "after /reload")
+    truthy(textureExists(earLayers(ns3)._texture))
+end)
+
+test("migrated saves keep working portrait ears", function()
+    for _, saved in ipairs({
+        { schema = 2, furColor = "F6F3FA" },
+        { schema = 3, variation = "dragon", furColor = "86C784" },
+        { schema = 3, variation = "angel", furColor = "FFFFFF" },
+    }) do
+        local ns2 = boot(saved, { setup = function() mkPlayer(100, 900, 60) end })
+        local fur = earLayers(ns2)
+        eq(ns2.Ears.GetState().player.shown, true)
+        truthy(textureExists(fur._texture))
+        eq(hexOf(fur:GetVertexColor()), ns2.Config.FurColor())
+    end
+end)
+
+test("ear visibility toggles keep layering, anchoring and click-through", function()
+    local ns2 = boot({ schema = 4, variation = "devil" },
+        { setup = function() mkLayeredPlayer({ ringLevel = 40 }); mkParty(1) end })
+    local _, _, o = earLayers(ns2)
+    local strata, level = o:GetFrameStrata(), o:GetFrameLevel()
+    eq(level, 50, "above the portrait ring")
+    slash("ears player off"); eq(ns2.Ears.GetState().player.shown, false)
+    eq(ns2.Ears.GetState().party1.shown, true, "party unaffected")
+    slash("ears party off"); eq(ns2.Ears.GetState().party1.shown, false)
+    slash("ears player on"); slash("ears party on")
+    local st = ns2.Ears.GetState()
+    eq(st.player.shown, true); eq(st.party1.shown, true)
+    eq(o:GetFrameStrata(), strata); eq(o:GetFrameLevel(), level)
+    local _, rel = o:GetPoint(1)
+    eq(rel, UIParent); eq(o:IsMouseEnabled(), false)
+end)
+
+----------------------------------------------------------------------------
 -- Hygiene
 ----------------------------------------------------------------------------
 

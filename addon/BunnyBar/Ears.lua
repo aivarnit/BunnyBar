@@ -98,7 +98,9 @@ local function createOverlay(target)
     local layers = ns.Appearance.CreateLayers(f, "OVERLAY")
     layers[1]:SetAllPoints(f)
     local t = Ears.TEXTURE
-    ns.Appearance.SetFrame(layers, ns.Appearance.SheetPath(t.file), 1, t.slots, false)
+    -- The ears texture is shared by all styles (root Textures folder). Using
+    -- SheetPath here pointed non-classic styles at a file that doesn't exist.
+    ns.Appearance.SetFrame(layers, ns.Appearance.SharedPath(t.file), 1, t.slots, false)
     target.overlay, target.layers = f, layers
     return f
 end

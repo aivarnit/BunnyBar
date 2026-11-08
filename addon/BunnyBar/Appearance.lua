@@ -78,6 +78,13 @@ function Appearance.CurrentVariation()
     return registry.variation[db and db.variation] or registry.variation.classic
 end
 
+-- Textures shared by every style (portrait ears, burrow holes, hearts, icon)
+-- live only in the root Textures folder - never use SheetPath for them.
+function Appearance.SharedPath(fileName)
+    return Appearance.TEXTURE_PATH .. fileName
+end
+
+-- Per-style bunny sheets: the selected style's folder.
 function Appearance.SheetPath(fileName)
     return Appearance.CurrentVariation().path .. fileName
 end

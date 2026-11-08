@@ -132,6 +132,7 @@ end
 -- Textures
 function Region:SetTexture(file, wrapH, wrapV, filter)
     self._texture, self._filter = file, filter
+    if type(file) == "string" then M.texturePaths[file] = true end
 end
 function Region:SetColorTexture(r, g, b, a) self._color = { r, g, b, a } end
 function Region:SetTexCoord(l, r, t, b) self._texCoord = { l, r, t, b } end
@@ -324,6 +325,7 @@ function M.install(env)
     env = env or _G
     M.env = env
     M.now, M.timers, M.frames, M.chat = 0, {}, {}, {}
+    M.texturePaths = {} -- every texture file the addon asked for
 
     local UIParent = newRegion("Frame", nil)
     UIParent:SetSize(1920, 1080)
