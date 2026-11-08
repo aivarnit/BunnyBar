@@ -56,8 +56,9 @@ class TocTests(unittest.TestCase):
         meta, files = validate.check_toc(r)
         self.assertEqual(r.errors, [])
         self.assertEqual(meta["Interface"], "16001")
-        self.assertEqual(files, ["Util.lua", "Config.lua", "Appearance.lua", "Placement.lua",
-                                 "Animation.lua", "Ears.lua", "Options.lua", "Core.lua"])
+        self.assertEqual(files, ["Util.lua", "Config.lua", "Appearance.lua", "SpriteData.lua",
+                                 "Placement.lua", "Animation.lua", "Hearts.lua", "Ears.lua",
+                                 "Options.lua", "Core.lua"])
 
     def test_missing_listed_file_is_caught(self):
         with TempAddon() as d:
@@ -121,10 +122,18 @@ class TextureTests(unittest.TestCase):
         self.assertEqual(errors_for(validate.check_textures, validate.ADDON_DIR), [])
 
     def test_sheet_dimensions(self):
-        # Two stacked layers (fur, detail): height = 2 x frame height.
-        expected = {"bunny-idle.tga": (128, 64), "bunny-hop.tga": (64, 64), "bunny-land.tga": (32, 64),
-                    "bunny-sleepy.tga": (256, 64), "bunny-sleep.tga": (256, 64),
-                    "bunny-wake.tga": (128, 64), "bunny-ears.tga": (32, 32)}
+        # Two stacked layers (fur, detail): height = 2 x frame height. Every
+        # style has its own copy of the bunny sheets; effects are shared.
+        styled = {"bunny-idle.tga": (128, 64), "bunny-hop.tga": (256, 64),
+                  "bunny-sleepy.tga": (256, 64), "bunny-sleep.tga": (256, 64),
+                  "bunny-wake.tga": (128, 64), "bunny-carrot.tga": (512, 64),
+                  "bunny-groom.tga": (512, 64), "bunny-moves.tga": (256, 64),
+                  "bunny-burrow.tga": (512, 64)}
+        expected = dict(styled)
+        for sid in ("devil", "angel", "dragon", "zombie"):
+            expected.update({f"{sid}/{n}": v for n, v in styled.items()})
+        expected.update({"bunny-ears.tga": (32, 32), "bunny-burrow-fx.tga": (256, 64),
+                         "bunny-heart.tga": (16, 16)})
         self.assertEqual(set(validate.texture_references()), set(expected))
         for name, (width, height) in expected.items():
             w, h, bpp, alpha, top_left, _ = validate.read_tga(validate.ADDON_DIR / "Textures" / name)
@@ -137,12 +146,12 @@ class TextureTests(unittest.TestCase):
 
     def test_corrupt_texture_is_caught(self):
         with TempAddon() as d:
-            (d / "Textures" / "bunny-land.tga").write_bytes(b"not a tga")
-            self.assertTrue(any("bunny-land.tga" in e for e in errors_for(validate.check_textures, d)))
+            (d / "Textures" / "bunny-wake.tga").write_bytes(b"not a tga")
+            self.assertTrue(any("bunny-wake.tga" in e for e in errors_for(validate.check_textures, d)))
 
     def test_unreferenced_texture_is_caught(self):
         with TempAddon() as d:
-            shutil.copy(d / "Textures" / "bunny-land.tga", d / "Textures" / "bunny-extra.tga")
+            shutil.copy(d / "Textures" / "bunny-wake.tga", d / "Textures" / "bunny-extra.tga")
             self.assertTrue(any("unreferenced" in e for e in errors_for(validate.check_textures, d)))
 
     def test_generator_is_deterministic_and_committed(self):
@@ -176,16 +185,41 @@ def iou(a, b):
     return len(sa & sb) / len(sa | sb)
 
 
+import re  # noqa: E402
+
+ANIMATION_LUA = (validate.ADDON_DIR / "Animation.lua").read_text()
+
+
+def lua_block(name):
+    m = re.search(r"Bunny\." + name + r"\s*=\s*\{(.*?)\n\}", ANIMATION_LUA, re.S)
+    assert m, name
+    return m.group(1)
+
+
 def lua_sequences():
-    """Parse Bunny.SEQUENCES from Animation.lua -> {name: [(pose, secs)]}."""
-    import re
-    src = (validate.ADDON_DIR / "Animation.lua").read_text()
+    """Parse Bunny.SEQUENCES (multi-line) -> {name: [(pose, secs)]}."""
     out = {}
-    for m in re.finditer(r"^\s+(\w+)\s*=\s*\{((?:\s*\{\s*\"\w+\",\s*[\d.]+\s*\},?)+)\s*\},?$",
-                         src, re.M):
-        steps = re.findall(r'\{\s*"(\w+)",\s*([\d.]+)\s*\}', m.group(2))
+    for m in re.finditer(r"(\w+)\s*=\s*\{((?:\s*\{\s*\"\w+\"\s*,\s*[\d.]+\s*\}\s*,?)+)\s*\}",
+                         lua_block("SEQUENCES")):
+        steps = re.findall(r'\{\s*"(\w+)"\s*,\s*([\d.]+)\s*\}', m.group(2))
         out[m.group(1)] = [(p, float(t)) for p, t in steps]
     return out
+
+
+def lua_poses():
+    return {name: ("bunny-" + sheet, int(i))
+            for name, sheet, i in re.findall(r'(\w+)\s*=\s*\{\s*"(\w+)"\s*,\s*(\d+)\s*\}', lua_block("POSES"))}
+
+
+def lua_line(name):
+    """Right-hand side of a single-line `Bunny.NAME = { ... }` table."""
+    m = re.search(r"Bunny\." + name + r"\s*=\s*(\{.*\})\s*$", ANIMATION_LUA, re.M)
+    assert m, name
+    return m.group(1)
+
+
+def lua_number_table(name):
+    return {k: float(v) for k, v in re.findall(r"(\w+)\s*=\s*([\d.]+)", lua_line(name))}
 
 
 def gif_frames(data: bytes):
@@ -272,8 +306,8 @@ class SleepArtTests(unittest.TestCase):
         rows = {}
         for name, frames in self.sheets.items():
             for i, c in enumerate(frames):
-                if (name, i) == ("bunny-hop", 1):
-                    continue  # mid-air jump frame
+                if name == "bunny-hop" and i in (2, 3, 4):
+                    continue  # mid-air frames: rising, apex, falling
                 rows[f"{name}[{i + 1}]"] = ground_row(c)
         self.assertEqual(set(rows.values()), {29}, rows)
 
@@ -333,11 +367,27 @@ class SleepArtTests(unittest.TestCase):
 
     def test_timings_match_lua(self):
         lua = lua_sequences()
-        for name, secs in generate_sprites.TIMINGS.items():
-            self.assertIn(name, lua)
-            self.assertEqual([t for _, t in lua[name]], secs, name)
+        self.assertEqual(set(lua), set(generate_sprites.SEQUENCES))
+        for name, steps in generate_sprites.SEQUENCES.items():
+            self.assertEqual(lua[name], [(p, float(t)) for p, t in steps], name)
+        self.assertEqual(lua_poses(), generate_sprites.POSES)
+        self.assertEqual(lua_number_table("HOP_TIMING"), generate_sprites.HOP_TIMING)
+        air = re.findall(r'\{\s*([\d.]+)\s*,\s*"(\w+)"\s*\}', lua_line("AIR_POSES"))
+        self.assertEqual([(float(a), b) for a, b in air], generate_sprites.AIR_POSES)
+        for const in ("BURROW_UNDERGROUND", "BURROW_HOLE_OPEN"):
+            m = re.search(r"Bunny\." + const + r"\s*=\s*([\d.]+)", ANIMATION_LUA)
+            self.assertEqual(float(m.group(1)), getattr(generate_sprites, const), const)
+        fx = {}
+        for seq_name, body in re.findall(r"(\w+)\s*=\s*\{((?:\s*\[\d+\]\s*=\s*\{[^}]*\}\s*,?)+)\s*\}", lua_block("BURROW_FX")):
+            fx[seq_name] = {int(i): (w, None if f == "false" else int(f))
+                            for i, w, f in re.findall(r'\[(\d+)\]\s*=\s*\{\s*"(\w+)"\s*,\s*(\w+)\s*\}', body)}
+        self.assertEqual(fx, generate_sprites.BURROW_FX)
+        hearts = (validate.ADDON_DIR / "Hearts.lua").read_text()
+        m = re.search(r"Hearts\.PARTICLE\s*=\s*\{([^}]*)\}", hearts)
+        self.assertEqual({k: float(v) for k, v in re.findall(r"(\w+)\s*=\s*([\d.]+)", m.group(1))},
+                         generate_sprites.HEART_PARTICLE)
         windows = {"drowsy": (0.5, 0.8), "liedown": (0.5, 0.8),
-                   "breathe": (2.0, 3.0), "wake": (0.6, 1.0)}
+                   "breathe": (2.0, 3.0), "wake": (0.6, 1.0), "carrot": (3.0, 5.0)}
         for name, (lo, hi) in windows.items():
             self.assertTrue(lo <= sum(generate_sprites.TIMINGS[name]) <= hi, name)
 
@@ -353,6 +403,22 @@ class SleepArtTests(unittest.TestCase):
         self.assertEqual(delays[3:6], [round(t * 100) for t in generate_sprites.TIMINGS["drowsy"]])
         # Frames differ (the animation actually animates).
         self.assertGreater(len(set(frames)), 15)
+
+    def test_v03_previews_decode(self):
+        out = _build()
+        for name in ("hop-preview.gif", "carrot-preview.gif", "burrow-preview.gif", "hearts-preview.gif"):
+            data = out[generate_sprites.IMAGES / name]
+            self.assertLess(len(data), 200_000, name)
+            w, h, frames, delays = gif_frames(data)
+            self.assertGreater(len(set(frames)), 5, name)
+            for f in frames:
+                self.assertEqual(len(f), w * h)
+        # The carrot preview plays the addon's carrot sequence at its timings.
+        _, _, _, delays = gif_frames(out[generate_sprites.IMAGES / "carrot-preview.gif"])
+        self.assertEqual(delays[1:-1], [round(t * 100) for t in generate_sprites.TIMINGS["carrot"]])
+        for sid in ("classic", "devil", "angel", "dragon", "zombie"):
+            self.assertIn(generate_sprites.IMAGES / f"sprites-{sid}.png", out)
+        self.assertIn(generate_sprites.IMAGES / "styles.png", out)
 
 
 class RecolourTests(unittest.TestCase):
@@ -389,9 +455,11 @@ class RecolourTests(unittest.TestCase):
         for c in self.frames + [self.ears]:
             fur, _ = generate_sprites.split_layers(c)
             tones |= {p[:3] for row in fur.px for p in row if p[3]}
-        # Exactly the normalised main fur (white) and shade tones: every frame
-        # recolours identically.
-        self.assertEqual(len(tones), 2, tones)
+        # Only the normalised fur palette (main fur = white, shade, mouth,
+        # eyelid): every frame recolours identically.
+        allowed = {tuple(min(255, round(c[i] * 255 / generate_sprites.FUR_BASE[i])) for i in range(3))
+                   for c in generate_sprites.FUR_RGB}
+        self.assertTrue(tones <= allowed, tones - allowed)
         self.assertIn((255, 255, 255), tones)
 
     def test_recolour_changes_fur_only(self):
@@ -424,6 +492,79 @@ class RecolourTests(unittest.TestCase):
         sil = {(x, y) for y in range(16) for x in range(32) if e.px[y][x][3]}
         mirrored = {(31 - x, y) for x, y in sil}
         self.assertLessEqual(len(sil ^ mirrored), 8)
+
+
+class StyleArtTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.all = {st.id: generate_sprites.frames(st.id) for st in generate_sprites.STYLES}
+
+    def test_every_style_has_every_frame(self):
+        base = {k: len(v) for k, v in self.all["classic"].items()}
+        for sid, sheets in self.all.items():
+            self.assertEqual({k: len(v) for k, v in sheets.items()}, base, sid)
+            for frames in sheets.values():
+                for c in frames:
+                    self.assertEqual((c.w, c.h), (32, 32))
+
+    def test_style_features_are_present_and_distinct(self):
+        g = generate_sprites
+        features = {"devil": [g.DEVIL_HORN, g.DEVIL_TAIL], "angel": [g.HALO, g.WING],
+                    "dragon": [g.DRAGON_HORN, g.DRAGON_WING], "zombie": [g.STITCH, g.PATCH]}
+        for sid, colours in features.items():
+            idle = self.all[sid]["bunny-idle"][0]
+            used = {p[:3] for row in idle.px for p in row if p[3]}
+            for col in colours:
+                self.assertIn(col[:3], used, f"{sid} idle frame lacks {col}")
+            classic = {p[:3] for row in self.all["classic"]["bunny-idle"][0].px for p in row if p[3]}
+            self.assertFalse(set(c[:3] for c in colours) & classic, f"{sid} features leak into classic")
+
+    def test_style_details_stay_untinted_and_fur_tinted(self):
+        g = generate_sprites
+        for sid, sheets in self.all.items():
+            for c in sheets["bunny-idle"] + sheets["bunny-hop"]:
+                t = g.tint_composite(c, "3060C0")
+                for y in range(32):
+                    for x in range(32):
+                        p = c.px[y][x]
+                        if p[3] and not g.is_fur(p):
+                            self.assertEqual(t.px[y][x], p, f"{sid}: detail pixel changed by tint")
+
+    def test_zombie_has_a_drooping_ear(self):
+        z = silhouette(self.all["zombie"]["bunny-idle"][0])
+        c = silhouette(self.all["classic"]["bunny-idle"][0])
+        # The far ear flops back: the zombie's ear tips no longer reach the top.
+        self.assertGreater(min(y for _, y in z), min(y for _, y in c) - 1)
+        self.assertNotEqual(z, c)
+
+    def test_classic_style_is_unchanged_by_style_hooks(self):
+        g = generate_sprites
+        a = g.frames("classic")["bunny-sleep"][0]
+        b = g.draw_bunny(**g.LIE, eyes="closed")
+        g.add_z(b, g.Z_FRAMES[0])
+        self.assertEqual(a.px, b.px)
+
+    def test_burrow_frames_sink_and_emerge_progressively(self):
+        for sid, sheets in self.all.items():
+            bur = sheets["bunny-burrow"]
+            sink = [sum(1 for row in c.px for p in row if p[3]) for c in bur[4:8]]
+            self.assertEqual(sink, sorted(sink, reverse=True), f"{sid} sink shrinks: {sink}")
+            self.assertGreater(sink[-1], 0, f"{sid}: ear tips still visible")
+            emerge = [sum(1 for row in c.px for p in row if p[3]) for c in bur[8:11]]
+            self.assertEqual(emerge, sorted(emerge), f"{sid} emerge grows: {emerge}")
+            for c in bur[4:10]:
+                self.assertTrue(all(c.px[y][x][3] == 0 for y in range(30, 32) for x in range(32)),
+                                "nothing below the ground line while in the hole")
+
+    def test_sprite_data_matches_frames(self):
+        src = generate_sprites.SPRITE_DATA_PATH.read_text()
+        for sid, sheets in self.all.items():
+            for name, frames in sheets.items():
+                boxes = [generate_sprites.bbox(c) for c in frames]
+                line = f'["{name}.tga"] = {{ ' + ", ".join("{ %d, %d, %d, %d }" % b for b in boxes) + " },"
+                self.assertIn(line, src, f"{sid} {name}")
+                for b in boxes:
+                    self.assertTrue(b[2] > b[0] and b[3] > b[1], f"{sid} {name}: empty box")
 
 
 class PackageTests(unittest.TestCase):
@@ -491,7 +632,7 @@ class DocsTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text()
         for cmd in ["show", "hide", "lock", "unlock", "reset", "size", "speed",
                     "interval", "width", "height", "test", "stats", "bars", "options",
-                    "color", "ears"]:
+                    "color", "ears", "style", "hearts", "burrow", "idle", "carrot"]:
             self.assertIn(cmd, config)
             self.assertIn(f"/bunny {cmd}", commands, cmd)
             self.assertIn(f"/bunny {cmd}", readme, cmd)

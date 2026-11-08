@@ -11,7 +11,8 @@ local Config = {}
 ns.Config = Config
 
 -- 1: v0.1 (size default 32). 2: appearance, portrait ears, size default 64.
-Config.SCHEMA_VERSION = 2
+-- 3: styles, idle behaviours, burrowing, hover hearts.
+Config.SCHEMA_VERSION = 3
 Config.LEGACY_DEFAULT_SIZE = 32
 
 -- Default settings. `point == nil` means "auto": place the track just above
@@ -34,6 +35,14 @@ Config.DEFAULTS = {
     -- Portrait ears (see Ears.lua)
     earsPlayer = true,
     earsParty = true,
+    -- Behaviours (see Animation.lua)
+    idleExtras = true,          -- carrot, face washing, scratching, stretching, looking around
+    carrot = true,
+    burrow = true,
+    burrowFrequency = "normal", -- rare | normal | often
+    -- Interactions (see Hearts.lua)
+    hearts = true,
+    heartIntensity = "normal",  -- subtle | normal | extra
     -- Saved position (nil = auto placement above the bottom bars).
     point = nil, relativePoint = nil, x = nil, y = nil,
 }
@@ -84,8 +93,26 @@ local function isFiniteNumber(v)
     return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
 end
 
+Config.ENUMS = {
+    burrowFrequency = { "rare", "normal", "often" },
+    heartIntensity = { "subtle", "normal", "extra" },
+}
+
+local function enumValidator(key)
+    return function(v)
+        if type(v) ~= "string" then return nil end
+        v = v:lower()
+        for _, allowed in ipairs(Config.ENUMS[key]) do
+            if v == allowed then return v end
+        end
+        return nil
+    end
+end
+
 -- String settings: return the canonical value or nil if invalid.
 local STRING_VALIDATORS = {
+    burrowFrequency = enumValidator("burrowFrequency"),
+    heartIntensity = enumValidator("heartIntensity"),
     furColor = function(v) return (Util.ParseHex(v)) end,
     variation = function(v)
         return ns.Appearance and ns.Appearance.IsValid("variation", v) and v or nil
@@ -154,6 +181,7 @@ end
 
 local APPEARANCE_KEYS = { furColor = true, variation = true, hat = true }
 local EAR_KEYS = { earsPlayer = true, earsParty = true }
+local HEART_KEYS = { hearts = true, heartIntensity = true }
 
 -- Push a settings change to every part of the addon. `key == nil` means
 -- "everything changed" (reset).
@@ -169,6 +197,9 @@ function Config.Notify(key)
         end
         if ns.Appearance then ns.Appearance.Apply() end
         if ns.Ears then ns.Ears.Refresh() end
+        if ns.Hearts then ns.Hearts.Refresh() end
+    elseif HEART_KEYS[key] then
+        if ns.Hearts then ns.Hearts.Refresh() end
     elseif APPEARANCE_KEYS[key] then
         if ns.Appearance then ns.Appearance.Apply() end
     elseif EAR_KEYS[key] then
@@ -214,6 +245,35 @@ function Config.Set(key, value)
     return true
 end
 
+-- The default fur colour of a style ("F6F3FA" for classic).
+function Config.StyleDefaultFur(id)
+    local def = ns.Appearance and ns.Appearance.Get("variation", id)
+    return def and def.defaultFur or Config.DEFAULTS.furColor
+end
+
+-- Switch style. If the fur colour is still the current style's default (the
+-- player hasn't picked their own), it follows the new style's default;
+-- a custom colour is always kept. Returns true, or false and an error.
+function Config.SetStyle(id)
+    if type(id) ~= "string" then return false, "Choose a style." end
+    id = id:lower()
+    if not (ns.Appearance and ns.Appearance.IsValid("variation", id)) then
+        local names = {}
+        for _, def in ipairs(ns.Appearance.List("variation")) do names[#names + 1] = def.id end
+        return false, ("'%s' is not a style. Choose %s."):format(id, table.concat(names, ", "))
+    end
+    local db = ns.db
+    local followDefault = db.furColor == Config.StyleDefaultFur(db.variation)
+    if followDefault then db.furColor = Config.StyleDefaultFur(id) end
+    if db.variation ~= id then
+        db.variation = id
+        Config.Notify("variation")
+    elseif followDefault then
+        Config.Notify("furColor")
+    end
+    return true
+end
+
 ----------------------------------------------------------------------------
 -- Chat output
 ----------------------------------------------------------------------------
@@ -238,6 +298,7 @@ local HELP = {
     "|cffffd200/bunny show|r / |cffffd200hide|r - show or hide the bunny",
     "|cffffd200/bunny lock|r / |cffffd200unlock|r - lock position or enable dragging",
     "|cffffd200/bunny reset|r - restore default settings and position",
+    "|cffffd200/bunny style <classic|devil|angel|dragon|zombie>|r - bunny style",
     "|cffffd200/bunny color <#RRGGBB|reset>|r - fur colour",
     "|cffffd200/bunny size <16-128>|r - sprite size (presets: " .. Config.PresetSizesText() .. ")",
     "|cffffd200/bunny ears <player|party> <on|off>|r - bunny ears on portraits",
@@ -245,7 +306,9 @@ local HELP = {
     "|cffffd200/bunny interval <2-120>|r - average seconds between hops (default 8)",
     "|cffffd200/bunny width <64-2000>|r - track width (default 480)",
     "|cffffd200/bunny height <0-64>|r - hop height (default 16)",
-    "|cffffd200/bunny test|r - trigger a test hop",
+    "|cffffd200/bunny test [hop|carrot|wash|scratch|stretch|look|burrow|nap|hearts]|r - try a behaviour",
+    "|cffffd200/bunny idle|carrot|burrow <on|off>|r, |cffffd200/bunny burrow rare|normal|often|r - behaviours",
+    "|cffffd200/bunny hearts <on|off|subtle|normal|extra>|r - hover hearts",
     "|cffffd200/bunny stats|r - performance and status info",
     "|cffffd200/bunny bars|r - show which bottom bars the bunny detected",
 }
@@ -299,13 +362,94 @@ Config.Handlers = {
         Config.Notify(nil)
         ns.Print("settings and position restored to defaults.")
     end,
-    test = function()
+    test = function(rest)
         if not ns.db.shown then
             ns.Print("the bunny is hidden. Type /bunny show first.")
             return
         end
-        bunny():TestHop()
-        ns.Print("hop!")
+        local what = rest:lower()
+        if what == "" then what = "hop" end
+        if what == "hearts" then
+            if not ns.db.hearts then
+                printError("hover hearts are off. Type /bunny hearts on first.")
+                return false
+            end
+            ns.Hearts.Burst()
+            ns.Print("hearts!")
+            return
+        end
+        local valid = { hop = true, carrot = true, wash = true, scratch = true, stretch = true,
+                        look = true, burrow = true, nap = true }
+        if not valid[what] then
+            printError(("unknown test '%s'. Try hop, carrot, wash, scratch, stretch, look, burrow, nap or hearts."):format(what))
+            return false
+        end
+        local ok, why = bunny():Perform(what)
+        if ok then
+            ns.Print(what == "hop" and "hop!" or (what .. "!"))
+        elseif why == "busy" then
+            ns.Print("the bunny is mid-hop. Try again in a moment.")
+        elseif why == "track" then
+            printError("the track is too short to burrow. Try /bunny width 480.")
+            return false
+        end
+    end,
+    style = function(rest)
+        if rest == "" then
+            local names = {}
+            for _, def in ipairs(ns.Appearance.List("variation")) do names[#names + 1] = def.id end
+            ns.Print(("style is %s. Choose %s."):format(ns.db.variation, table.concat(names, ", ")))
+            return
+        end
+        local ok, err = Config.SetStyle(rest)
+        if not ok then printError(err); return false end
+        ns.Print(("style set to %s."):format(ns.db.variation))
+    end,
+    hearts = function(rest)
+        local v = rest:lower()
+        if ON[v] or OFF[v] then
+            Config.Set("hearts", ON[v] and true or false)
+        elseif Config.ENUMS.heartIntensity and (v == "subtle" or v == "normal" or v == "extra") then
+            Config.Set("heartIntensity", v)
+            Config.Set("hearts", true)
+        elseif v ~= "" then
+            printError("use /bunny hearts on, off, subtle, normal or extra.")
+            return false
+        end
+        ns.Print(("hover hearts: %s (%s)."):format(ns.db.hearts and "on" or "off", ns.db.heartIntensity))
+    end,
+    burrow = function(rest)
+        local v = rest:lower()
+        if ON[v] or OFF[v] then
+            Config.Set("burrow", ON[v] and true or false)
+        elseif v == "rare" or v == "normal" or v == "often" then
+            Config.Set("burrowFrequency", v)
+            Config.Set("burrow", true)
+        elseif v ~= "" then
+            printError("use /bunny burrow on, off, rare, normal or often.")
+            return false
+        end
+        ns.Print(("burrowing: %s (%s)."):format(ns.db.burrow and "on" or "off", ns.db.burrowFrequency))
+    end,
+    idle = function(rest)
+        local v = rest:lower()
+        if ON[v] or OFF[v] then
+            Config.Set("idleExtras", ON[v] and true or false)
+        elseif v ~= "" then
+            printError("use /bunny idle on or off.")
+            return false
+        end
+        ns.Print(("idle behaviours: %s."):format(ns.db.idleExtras and "on" or "off"))
+    end,
+    carrot = function(rest)
+        local v = rest:lower()
+        if ON[v] or OFF[v] then
+            Config.Set("carrot", ON[v] and true or false)
+        elseif v ~= "" then
+            printError("use /bunny carrot on or off.")
+            return false
+        end
+        ns.Print(("carrot eating: %s."):format(ns.db.carrot and "on" or "off"))
     end,
     stats = function()
         local lines = bunny():GetStats()
@@ -330,7 +474,7 @@ Config.Handlers = {
             ns.Print(("fur colour is #%s. Use /bunny color #RRGGBB or /bunny color reset."):format(ns.db.furColor))
             return
         end
-        local value = rest:lower() == "reset" and Config.DEFAULTS.furColor or rest
+        local value = rest:lower() == "reset" and Config.StyleDefaultFur(ns.db.variation) or rest
         local ok, err = Config.Set("furColor", value)
         if not ok then printError(err); return false end
         ns.Print(("fur colour set to #%s."):format(ns.db.furColor))

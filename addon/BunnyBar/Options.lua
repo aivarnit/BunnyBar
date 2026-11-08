@@ -38,7 +38,10 @@ local SLIDER_W, SLIDER_H = 150, 14
 -- size presets, so adding presets can never overlap the next section.
 local RIGHT_X, TOP_Y = 320, -70
 local ROW = 22           -- radio / checkbox row height
+local CHECK_ROW = 26     -- checkbox row height
 local SECTION_GAP = 24   -- space between sections
+local GRID_COL = 130     -- width of a radio-grid column
+local INLINE_COL = 76    -- width of an inline radio option
 Options.layout = {}
 
 ----------------------------------------------------------------------------
@@ -345,31 +348,116 @@ local function buildColour(x, y)
     c.preview = pv
 end
 
-local function presetClick(self)
-    ns.Config.Set("size", self.presetSize)
+-- A grid of radio buttons (`cols` per row). Returns the buttons and the y of
+-- the grid's bottom edge.
+local function radioGrid(x, y, items, cols, colW, onClick)
+    local buttons = {}
+    for i, item in ipairs(items) do
+        local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
+        local rb = make("CheckButton", panel, "UIRadioButtonTemplate")
+        rb:SetSize(18, 18)
+        rb:SetPoint("TOPLEFT", panel, "TOPLEFT", x + col * colW, y - row * ROW)
+        rb.value = item.value
+        rb:SetScript("OnClick", onClick)
+        text(panel, "GameFontHighlight", item.label, "LEFT", rb, "RIGHT", 4, 0)
+        buttons[i] = rb
+    end
+    return buttons, y - math.ceil(#items / cols) * ROW
+end
+
+local function checkbox(x, y, label, key, onClick)
+    local cb = make("CheckButton", panel, "UICheckButtonTemplate")
+    cb:SetSize(24, 24)
+    cb:SetPoint("TOPLEFT", panel, "TOPLEFT", x - 3, y)
+    cb.settingKey = key
+    cb:SetScript("OnClick", onClick)
+    text(panel, "GameFontHighlight", label, "LEFT", cb, "RIGHT", 2, 0)
+    return cb
+end
+
+local function settingClick(self)
+    ns.Config.Set(self.settingKey, self:GetChecked() and true or false)
     Options.Refresh()
+end
+
+local function presetClick(self)
+    ns.Config.Set("size", self.value)
+    Options.Refresh()
+end
+
+local function styleClick(self)
+    ns.Config.SetStyle(self.value)
+    Options.Refresh()
+end
+
+local function enumClick(self)
+    ns.Config.Set(self.settingKey, self.value)
+    Options.Refresh()
+end
+
+-- Style selector: one radio per registered variation (the registry decides
+-- what is offered, so future styles appear automatically).
+local function buildStyle(x, y)
+    header("Bunny Style", x, y)
+    local items = {}
+    for _, def in ipairs(ns.Appearance.List("variation")) do
+        items[#items + 1] = { label = def.label, value = def.id }
+    end
+    local bottom
+    c.styles, bottom = radioGrid(x, y - ROW, items, 2, GRID_COL, styleClick)
+    return bottom
 end
 
 local function buildSize(x, y)
     header("Bunny Size", x, y)
-    c.sizes = {}
+    local items = {}
     for i, p in ipairs(ns.Config.SIZE_PRESETS) do
-        local rb = make("CheckButton", panel, "UIRadioButtonTemplate")
-        rb:SetSize(18, 18)
-        rb:SetPoint("TOPLEFT", panel, "TOPLEFT", x, y - ROW - (i - 1) * ROW)
-        rb.presetSize = p.size
-        rb:SetScript("OnClick", presetClick)
-        text(panel, "GameFontHighlight", ("%s (%d)"):format(p.label, p.size), "LEFT", rb, "RIGHT", 4, 0)
-        c.sizes[i] = rb
+        items[i] = { label = ("%s (%d)"):format(p.label, p.size), value = p.size }
     end
-    local customY = y - ROW - #ns.Config.SIZE_PRESETS * ROW - 2
+    local bottom
+    c.sizes, bottom = radioGrid(x, y - ROW, items, 2, GRID_COL, presetClick)
+    for _, rb in ipairs(c.sizes) do rb.presetSize = rb.value end
+    local customY = bottom - 2
     c.customSize = text(panel, "GameFontDisableSmall", "", "TOPLEFT", panel, "TOPLEFT", x, customY)
     return customY - 12 -- bottom of the section (custom label ~12 high)
 end
 
-local function earClick(self)
-    ns.Config.Set(self.settingKey, self:GetChecked() and true or false)
-    Options.Refresh()
+-- An inline row: "Label  (o) A  (o) B  (o) C" bound to an enum setting.
+local function enumRow(x, y, label, key, items)
+    text(panel, "GameFontHighlightSmall", label, "TOPLEFT", panel, "TOPLEFT", x, y - 3)
+    local buttons = radioGrid(x + 66, y, items, #items, INLINE_COL, enumClick)
+    for _, rb in ipairs(buttons) do rb.settingKey = key end
+    return buttons, y - ROW
+end
+
+local function buildBehaviors(x, y)
+    header("Bunny Behaviors", x, y)
+    c.behaviors = {}
+    local rows = {
+        { key = "idleExtras", label = "Idle animations (washing, stretching, ...)" },
+        { key = "carrot", label = "Find and eat carrots" },
+        { key = "burrow", label = "Burrow to the other side" },
+    }
+    local cy = y - 20
+    for _, row in ipairs(rows) do
+        c.behaviors[row.key] = checkbox(x, cy, row.label, row.key, settingClick)
+        cy = cy - CHECK_ROW
+    end
+    local bottom
+    c.burrowFrequency, bottom = enumRow(x, cy - 2, "Burrowing", "burrowFrequency", {
+        { label = "Rare", value = "rare" }, { label = "Normal", value = "normal" }, { label = "Often", value = "often" },
+    })
+    return bottom
+end
+
+local function buildInteractions(x, y)
+    header("Bunny Interactions", x, y)
+    c.hearts = checkbox(x, y - 20, "Hearts when you hover over the bunny", "hearts", settingClick)
+    local bottom
+    c.heartIntensity, bottom = enumRow(x, y - 20 - CHECK_ROW - 2, "Hearts", "heartIntensity", {
+        { label = "Subtle", value = "subtle" }, { label = "Normal", value = "normal" }, { label = "Extra", value = "extra" },
+    })
+    return bottom
 end
 
 local function buildPortraits(x, y)
@@ -380,30 +468,13 @@ local function buildPortraits(x, y)
         { key = "earsParty", label = "Bunny ears on party portraits" },
     }
     for i, row in ipairs(rows) do
-        local cb = make("CheckButton", panel, "UICheckButtonTemplate")
-        cb:SetSize(24, 24)
-        cb:SetPoint("TOPLEFT", panel, "TOPLEFT", x - 3, y - 20 - (i - 1) * 26)
-        cb.settingKey = row.key
-        cb:SetScript("OnClick", earClick)
-        text(panel, "GameFontHighlight", row.label, "LEFT", cb, "RIGHT", 2, 0)
-        c.ears[row.key] = cb
+        c.ears[row.key] = checkbox(x, y - 20 - (i - 1) * CHECK_ROW, row.label, row.key, settingClick)
     end
-    return y - 20 - #rows * 26
+    return y - 20 - #rows * CHECK_ROW
 end
 
--- Future cosmetics: only informational until more than one choice exists,
--- so no selector pretends there is something to choose.
-local function buildStyles(x, y)
-    header("Styles", x, y)
-    local A = ns.Appearance
-    local variation = A.CurrentVariation()
-    local hat = A.Get("hat", ns.db.hat) or A.Get("hat", "none")
-    c.styles = text(panel, "GameFontHighlightSmall",
-        ("Style: %s   Hat: %s\nMore bunny styles, hats and accessories are planned."):format(
-            variation.label, hat.label),
-        "TOPLEFT", panel, "TOPLEFT", x, y - 22)
-    c.styles:SetWidth(260)
-end
+-- Bottom of the colour section (see buildColour's fixed layout).
+local COLOUR_BOTTOM = TOP_Y - 24 - SQUARE - 22 - 30 - 36 - 44 - 22
 
 function Options.Build()
     if built or not panel then return end
@@ -412,14 +483,20 @@ function Options.Build()
     text(panel, "GameFontHighlightSmall",
         "A tiny pixel-art bunny that lives above your action bar. Changes apply immediately.",
         "TOPLEFT", panel, "TOPLEFT", 16, -40)
-    buildColour(16, TOP_Y)
     local L = Options.layout
-    L.sizeTop = TOP_Y
-    L.sizeBottom = buildSize(RIGHT_X, L.sizeTop)
-    L.portraitTop = L.sizeBottom - SECTION_GAP
-    L.portraitBottom = buildPortraits(RIGHT_X, L.portraitTop)
-    L.stylesTop = L.portraitBottom - SECTION_GAP
-    buildStyles(RIGHT_X, L.stylesTop)
+    -- Left column: colour, then portrait accessories.
+    buildColour(16, TOP_Y)
+    L.colour = { x = 16, top = TOP_Y, bottom = COLOUR_BOTTOM }
+    local pTop = COLOUR_BOTTOM - SECTION_GAP
+    L.portrait = { x = 16, top = pTop, bottom = buildPortraits(16, pTop) }
+    -- Right column: style, size, behaviours, interactions.
+    local y = TOP_Y
+    for _, sec in ipairs({ { "style", buildStyle }, { "size", buildSize },
+                           { "behaviors", buildBehaviors }, { "interactions", buildInteractions } }) do
+        local bottom = sec[2](RIGHT_X, y)
+        L[sec[1]] = { x = RIGHT_X, top = y, bottom = bottom }
+        y = bottom - SECTION_GAP
+    end
 end
 
 function Options.IsBuilt()
@@ -456,6 +533,8 @@ function Options.Refresh()
     c.swatch:SetColorTexture(r, g, b, 1)
     c.hex:SetText("#" .. db.furColor)
 
+    for _, rb in ipairs(c.styles) do rb:SetChecked(rb.value == db.variation) end
+
     local preset = ns.Config.PresetForSize(db.size)
     for _, rb in ipairs(c.sizes) do rb:SetChecked(rb.presetSize == db.size) end
     if preset then
@@ -468,5 +547,10 @@ function Options.Refresh()
 
     c.ears.earsPlayer:SetChecked(db.earsPlayer)
     c.ears.earsParty:SetChecked(db.earsParty)
+
+    for key, cb in pairs(c.behaviors) do cb:SetChecked(db[key]) end
+    for _, rb in ipairs(c.burrowFrequency) do rb:SetChecked(rb.value == db.burrowFrequency) end
+    c.hearts:SetChecked(db.hearts)
+    for _, rb in ipairs(c.heartIntensity) do rb:SetChecked(rb.value == db.heartIntensity) end
     syncing = false
 end

@@ -8,7 +8,7 @@ All commands start with `/bunny`, or the alias `/bunnybar`. Command words aren't
 |---|---|
 | `/bunny` or `/bunny help` | Print the command list. |
 | `/bunny options` (aliases `config`, `settings`) | Open **Esc → Options → AddOns → BunnyBar**. In combat it opens as soon as combat ends. |
-| `/bunny color #RRGGBB` (alias `colour`) | Set the fur colour, for example `#FFB6C1` (pink), `#87CEEB` (sky blue) or `#000000`. The `#` is optional and case doesn't matter. Invalid values are rejected and the colour stays as it was. `/bunny color reset` restores the original (`#F6F3FA`); `/bunny color` on its own prints the current value. |
+| `/bunny color #RRGGBB` (alias `colour`) | Set the fur colour, for example `#FFB6C1` (pink), `#87CEEB` (sky blue) or `#000000`. The `#` is optional and case doesn't matter. Invalid values are rejected and the colour stays as it was. `/bunny color reset` restores the current style's default (`#F6F3FA` for Classic); `/bunny color` on its own prints the current value. |
 | `/bunny ears player on\|off`, `/bunny ears party on\|off` | Show or hide bunny ears on your portrait or on party portraits. `/bunny ears` on its own prints the current state. |
 | `/bunny ears debug` | Diagnostics for portrait-ear layering, not shown in `/bunny` help. For each portrait it prints the frame names, the strata/level of the portrait and of the highest overlapping frame, and the ears' desired versus actual strata/level. It also shows whether Edit Mode is active, whether a re-check is scheduled, and the last trigger. Useful when reporting an issue. |
 | `/bunny show` | Show the bunny and resume animation. |
@@ -17,6 +17,15 @@ All commands start with `/bunny`, or the alias `/bunnybar`. Command words aren't
 | `/bunny unlock` | Show a translucent blue track that you can drag with the left mouse button. |
 | `/bunny reset` | Restore **all** settings to their defaults, return to automatic placement above the action bar, and re-centre the bunny. |
 | `/bunny test` | Hop now. A napping bunny gets up first: from deep sleep it plays the wake-up (about 0.9 s), and if it's still lying down it rises back up. Does nothing if it's already hopping. |
+| `/bunny test carrot`, `wash`, `scratch`, `stretch`, `look` | Play that idle behaviour now (it works even if idle behaviours are switched off). |
+| `/bunny test burrow` | Burrow to the other side of the track now. It needs a track at least 1.5 bunny widths wider than the bunny. |
+| `/bunny test nap`, `/bunny test hop` | Take a nap now, or hop (same as `/bunny test`). |
+| `/bunny test hearts` | A short burst of hover hearts (hearts must be on). |
+| `/bunny style <classic\|devil\|angel\|dragon\|zombie>` | Change the bunny's style. If you haven't picked your own fur colour, the style's default colour comes with it. `/bunny style` on its own lists the styles. |
+| `/bunny hearts on\|off\|subtle\|normal\|extra` | Hover hearts on or off, or set their intensity (which also turns them on). |
+| `/bunny burrow on\|off\|rare\|normal\|often` | Burrowing on or off, or set how often (which also turns it on). |
+| `/bunny idle on\|off` | Idle behaviours: carrot, face washing, scratching, stretching, looking around. |
+| `/bunny carrot on\|off` | Carrot eating only. |
 | `/bunny bars` | Print where automatic placement put the bunny, and the status of every bar it checks: `visible` (with its top edge), `hidden`, `empty` (an XP/rep container with no bar showing), `off track`, `not at bottom`, `no geometry` and so on. Also lists frame names that don't exist on your client, how many frames are watched for live updates, and what last triggered a re-placement. |
 | `/bunny stats` (alias `status`) | Print state, hop/nap counters, the share of time per-frame updates were active, memory use, and per-addon CPU time (if the client exposes it). |
 

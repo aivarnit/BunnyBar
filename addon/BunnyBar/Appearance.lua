@@ -34,7 +34,10 @@ local registry = { variation = {}, hat = {} }
 local ordered = { variation = {}, hat = {} }
 
 -- Register a cosmetic. kind = "variation" or "hat".
---   variation: { label, path }     path = folder holding the sheet files
+--   variation: { label, path, defaultFur }
+--       path       = folder holding this style's copy of every sheet
+--       defaultFur = suggested fur colour (used when the player hasn't
+--                    picked their own, see Config.SetStyle)
 --   hat:       { label, ... }      future: own sheet + anchor, tint key
 function Appearance.Register(kind, id, def)
     assert(registry[kind], "unknown appearance kind")
@@ -58,7 +61,16 @@ function Appearance.List(kind)
     return ordered[kind]
 end
 
-Appearance.Register("variation", "classic", { label = "Classic", path = Appearance.TEXTURE_PATH })
+-- Styles ("variations"). Every style has the same sheets and frames, drawn
+-- from shared pose data by scripts/generate_sprites.py; only the extras
+-- differ (horns, halo, wings, tails, patches). Classic keeps the original
+-- folder so v0.2 paths stay valid.
+local P = Appearance.TEXTURE_PATH
+Appearance.Register("variation", "classic", { label = "Classic", path = P, defaultFur = "F6F3FA" })
+Appearance.Register("variation", "devil", { label = "Devil", path = P .. "devil\\", defaultFur = "E06E7C" })
+Appearance.Register("variation", "angel", { label = "Angel", path = P .. "angel\\", defaultFur = "FFF6E6" })
+Appearance.Register("variation", "dragon", { label = "Dragon", path = P .. "dragon\\", defaultFur = "86C784" })
+Appearance.Register("variation", "zombie", { label = "Zombie", path = P .. "zombie\\", defaultFur = "A9C4A2" })
 Appearance.Register("hat", "none", { label = "None" })
 
 function Appearance.CurrentVariation()

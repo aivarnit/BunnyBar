@@ -54,6 +54,7 @@ function handlers.PLAYER_LOGIN()
     bunny:SetLocked(db.locked)
     bunny:SetShown(db.shown)
     ns.Appearance.Apply()
+    ns.Hearts.Refresh()
     ns.Ears.Init()
     ns.Options.Register()
     for i = 1, #LAYOUT_EVENTS do tryRegister(LAYOUT_EVENTS[i]) end

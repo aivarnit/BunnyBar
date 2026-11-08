@@ -6,6 +6,10 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 
 **Current version: 0.2.0** · [Download](https://github.com/aivarnit/BunnyBar/releases/latest) · [Release notes](docs/releases/v0.2.0.md)
 
+> **Coming in v0.3 (on `main`, not released yet):** a smoother 8-pose hop, idle behaviours (carrot eating, face washing, ear scratching, stretching, looking around), rare burrowing across the track, five bunny styles (Classic, Devil, Angel, Dragon, Zombie) and hover hearts. See [docs/ANIMATIONS.md](docs/ANIMATIONS.md). These features still need in-game testing on WoW Forever before release.
+
+![The five bunny styles](docs/images/styles.png)
+
 ![Animated preview of a full nap: the bunny gets sleepy, yawns, lies down, breathes with drifting z's, twitches an ear, then wakes, stretches and sits up](docs/images/sleep-preview.gif)
 
 ![BunnyBar sprite sheet, one animation per row: idle and hopping; getting sleepy and lying down; sleeping breath cycle with ear and nose twitches; waking up](docs/images/sprite-preview.png)
@@ -17,8 +21,10 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 ### The bunny
 
 - **Animated pixel art**: an original 32×32 white bunny with pink inner ears, drawn from code (`scripts/generate_sprites.py`) and rendered with nearest-neighbour filtering so pixels stay crisp.
-- **Hops, blinks and ear twitches**: it waits 4–12 seconds, picks a random spot on its track and gets there in a series of small parabolic hops (crouch, jump, land). It faces the way it's going and never teleports. In between, it blinks, twitches its ears and breathes.
+- **Hops, blinks and ear twitches**: it waits 4–12 seconds, picks a random spot on its track and gets there in a series of small parabolic hops, each in 8 poses (anticipation, push-off, rising, apex, falling, contact, squash, recovery). It faces the way it's going and never teleports. In between, it blinks, twitches its ears and breathes.
 - **Naps**: now and then it gets drowsy, yawns, curls up and sleeps, breathing slowly with a rising "z" and the odd ear or nose twitch. Then it wakes, stretches and sits up, with every step drawn as its own frame.
+- **Idle behaviours** *(v0.3)*: finds and eats a carrot in three little bites, washes its face, scratches behind an ear, stretches and looks around.
+- **Burrowing** *(v0.3)*: once in a while it digs a hole, disappears into it and pops out of a second hole on the other side of its track.
 - **Automatic placement**: it sits just above the highest visible bar at the bottom of the screen, whether that's Action Bar 2/3, the XP or reputation bar, or the main action bar.
 - **Live repositioning**: it moves by itself, within a fraction of a second, when you toggle action bars, gain or lose the XP bar, change UI scale or edit your layout. No `/reload` needed.
 - **Manual positioning**: `/bunny unlock`, drag it anywhere, `/bunny lock`. A dragged position always wins over automatic placement until `/bunny reset`.
@@ -27,10 +33,16 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 ### Customization
 
 - **Native settings panel**: **Esc → Options → AddOns → BunnyBar**, or `/bunny options`. Everything applies instantly, no reload.
+- **Five styles** *(v0.3)*: Classic, Devil (horns and a pointed tail), Angel (halo and little wings), Dragon (horns, wings, a spiky tail) and Zombie (patchwork, stitches, a floppy ear). Every style does every animation and takes your fur colour.
+- **Behaviour switches** *(v0.3)*: idle animations, carrot eating, burrowing and how often (Rare, Normal or Often).
 - **Any fur colour**: a saturation/brightness square, a hue slider, a brightness slider and a hex-code box (for example `#FFB6C1`), plus a live preview and a Reset Color button. Only the fur changes: eyes, nose, pink inner ears, outlines and shading stay the same in every animation frame.
 - **Size presets**: Tiny 16, Small 32, Regular 64 (the default for new installs), Large 96 or Huge 128.
 - **Custom sizes**: `/bunny size` accepts any whole size from 16 to 128. The panel shows it as "Custom".
 - **More knobs**: hop speed, hop interval, track width and hop height, through slash commands.
+
+### Interactions *(v0.3)*
+
+- **Hover hearts**: point at the bunny and little pink hearts float up, even while it sleeps (it won't wake up). Subtle, Normal or Extra; clicks still go through to your action bars.
 
 ### Portrait accessories
 
@@ -41,7 +53,7 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 
 ### Lightweight
 
-No per-frame work while the bunny sits still; updates run only during the ~0.4 s of each hop. No libraries, no network, about 230 KB of textures. Your settings are saved per account and carried over when you upgrade.
+No per-frame work while the bunny sits still; updates run only during the ~0.4 s of each hop. Hover hearts check the cursor 4 times a second (20 near the bunny) and animate with WoW's own animation system. No libraries, no network. Each style's textures are about 700 KB uncompressed, but the game only loads the style you use, and the ZIP stays small because transparent pixels compress well. Your settings are saved per account and carried over when you upgrade.
 
 ## Installation
 
@@ -64,7 +76,11 @@ Step-by-step instructions, including how to create a missing `AddOns` folder and
 |---|---|
 | `/bunny` | Show help |
 | `/bunny options` | Open the BunnyBar settings panel |
-| `/bunny color #FFB6C1` | Fur colour as a hex code; `/bunny color reset` restores the original |
+| `/bunny color #FFB6C1` | Fur colour as a hex code; `/bunny color reset` restores the style's default |
+| `/bunny style devil` | Style: `classic`, `devil`, `angel`, `dragon`, `zombie` *(v0.3)* |
+| `/bunny hearts normal` | Hover hearts: `on`, `off`, `subtle`, `normal`, `extra` *(v0.3)* |
+| `/bunny burrow rare` | Burrowing: `on`, `off`, `rare`, `normal`, `often` *(v0.3)* |
+| `/bunny idle off`, `/bunny carrot off` | Idle behaviours / carrot eating on or off *(v0.3)* |
 | `/bunny show` | Show the bunny |
 | `/bunny hide` | Hide the bunny (all animation stops) |
 | `/bunny lock` | Lock the position (click-through) |
@@ -77,6 +93,7 @@ Step-by-step instructions, including how to create a missing `AddOns` folder and
 | `/bunny width 480` | Track width, 64–2000 (default 480) |
 | `/bunny height 16` | Hop height, 0–64 (default 16) |
 | `/bunny test` | Hop right now (a napping bunny wakes up first) |
+| `/bunny test carrot` | Try a behaviour now: `carrot`, `wash`, `scratch`, `stretch`, `look`, `burrow`, `nap`, `hearts` *(v0.3)* |
 | `/bunny stats` | Status, hop counters and performance info |
 | `/bunny bars` | Show which bottom bars were detected and which one the bunny sits on |
 

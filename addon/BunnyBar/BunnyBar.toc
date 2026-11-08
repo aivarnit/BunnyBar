@@ -11,8 +11,10 @@
 Util.lua
 Config.lua
 Appearance.lua
+SpriteData.lua
 Placement.lua
 Animation.lua
+Hearts.lua
 Ears.lua
 Options.lua
 Core.lua

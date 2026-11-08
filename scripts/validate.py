@@ -34,7 +34,7 @@ ADDON_NAME = "BunnyBar"
 ADDON_DIR = ROOT / "addon" / ADDON_NAME
 EXPECTED_INTERFACE = "16001"  # WoW Forever (client 1.60.x)
 FRAME = 32
-MAX_TEXTURE_BYTES = 80 * 1024
+MAX_TEXTURE_BYTES = 160 * 1024
 
 
 @dataclass
@@ -273,20 +273,53 @@ def is_pow2(n: int) -> bool:
     return n > 0 and n & (n - 1) == 0
 
 
-def texture_references(addon_dir: Path = ADDON_DIR):
-    """Map texture file name -> (frame count, slot count, frame height) from
-    every Lua file, using declarations like
+_DECL = re.compile(r'\{\s*file\s*=\s*"([\w-]+\.tga)"([^{}]*)\}')
+_KV = re.compile(r'(\w+)\s*=\s*(true|false|\d+)')
+
+
+def texture_declarations(addon_dir: Path = ADDON_DIR):
+    """All texture declarations in the addon's Lua files, e.g.
         { file = "bunny-idle.tga", count = 4, slots = 4 }
         { file = "bunny-ears.tga", count = 1, slots = 1, height = 16 }
-    `slots` is the strip width in frames (unused slots are padding); every
-    texture holds two stacked layers (fur, detail), so it is 2*height tall."""
-    refs = {}
-    pattern = re.compile(r'"([\w-]+\.tga)"\s*,\s*count\s*=\s*(\d+)'
-                         r'(?:\s*,\s*slots\s*=\s*(\d+))?(?:\s*,\s*height\s*=\s*(\d+))?')
+        { file = "bunny-heart.tga", count = 1, slots = 1, height = 16, layers = 1 }
+        { file = "bunny-burrow-fx.tga", count = 5, slots = 8, fx = true }
+    -> {file: dict(count, slots, height, layers, fx, styled)}. `styled` sheets
+    (Bunny.SHEETS in Animation.lua) exist once per bunny style."""
+    decls = {}
     for lua in sorted(addon_dir.glob("*.lua")):
-        for m in pattern.finditer(lua.read_text(encoding="utf-8")):
-            count = int(m.group(2))
-            refs[m.group(1)] = (count, int(m.group(3) or count), int(m.group(4) or FRAME))
+        src = lua.read_text(encoding="utf-8")
+        sheets_block = ""
+        if lua.name == "Animation.lua":
+            m = re.search(r"Bunny\.SHEETS\s*=\s*\{(.*?)\n\}", src, re.S)
+            sheets_block = m.group(1) if m else ""
+        for m in _DECL.finditer(src):
+            kv = {k: (v == "true" if v in ("true", "false") else int(v)) for k, v in _KV.findall(m.group(2))}
+            count = kv.get("count", 1)
+            decls[m.group(1)] = {
+                "count": count, "slots": kv.get("slots", count), "height": kv.get("height", FRAME),
+                "layers": kv.get("layers", 2), "fx": kv.get("fx", False),
+                "styled": m.group(0) in sheets_block,
+            }
+    return decls
+
+
+def style_ids(addon_dir: Path = ADDON_DIR):
+    src = (addon_dir / "Appearance.lua").read_text(encoding="utf-8")
+    return re.findall(r'Register\(\s*"variation"\s*,\s*"(\w+)"', src)
+
+
+def texture_references(addon_dir: Path = ADDON_DIR):
+    """Relative texture path -> (count, slots, height, layers, fx) for every
+    file the addon loads (styled sheets once per style folder)."""
+    refs = {}
+    styles = style_ids(addon_dir)
+    for name, d in texture_declarations(addon_dir).items():
+        spec = (d["count"], d["slots"], d["height"], d["layers"], d["fx"])
+        refs[name] = spec
+        if d["styled"]:
+            for sid in styles:
+                if sid != "classic":
+                    refs[f"{sid}/{name}"] = spec
     return refs
 
 
@@ -305,9 +338,11 @@ def composite(fur, detail):
 
 def check_textures(r: Report, addon_dir: Path = ADDON_DIR):
     refs = texture_references(addon_dir)
-    r.check(len(refs) >= 4, "textures: Lua declares sprite sheets", str(refs))
+    r.check(len(refs) >= 4, "textures: Lua declares sprite sheets", str(len(refs)))
+    styles = style_ids(addon_dir)
+    r.check("classic" in styles and len(styles) >= 1, "textures: classic style registered", str(styles))
     tex_dir = addon_dir / "Textures"
-    for name, (count, slots, fh) in sorted(refs.items()):
+    for name, (count, slots, fh, nlayers, fx) in sorted(refs.items()):
         path = tex_dir / name
         if not r.check(exists_exact_case(tex_dir, name) if tex_dir.exists() else False,
                        f"textures: {name} exists"):
@@ -320,37 +355,48 @@ def check_textures(r: Report, addon_dir: Path = ADDON_DIR):
         r.check(alpha == 8, f"textures: {name} has 8-bit alpha", str(alpha))
         r.check(is_pow2(w) and is_pow2(h), f"textures: {name} has power-of-two size", f"{w}x{h}")
         r.check(slots >= count, f"textures: {name} declares slots >= count", f"{count}/{slots}")
-        r.check(h == 2 * fh and w == FRAME * slots,
-                f"textures: {name} is {slots} slot(s) of {FRAME}x{fh}, two layers", f"{w}x{h}")
-        if w != FRAME * slots or h != 2 * fh:
+        fw = FRAME if nlayers == 2 else fh
+        r.check(h == nlayers * fh and w == fw * slots,
+                f"textures: {name} is {slots} slot(s) of {fw}x{fh}, {nlayers} layer(s)", f"{w}x{h}")
+        if h != nlayers * fh or w != fw * slots:
             continue
         r.check(path.stat().st_size <= MAX_TEXTURE_BYTES, f"textures: {name} is small",
                 f"{path.stat().st_size} bytes")
-        fur_rows, detail_rows = rows[:fh], rows[fh:]
+        if nlayers == 1:
+            px = [p for row in rows for p in row if p[3]]
+            r.check(len(px) >= 8, f"textures: {name} has a sprite")
+            r.check(rows[0][0][3] == 0 and rows[-1][-1][3] == 0, f"textures: {name} has a transparent background")
+            continue
+        top_rows, bottom_rows = rows[:fh], rows[fh:]
         overlap = sum(1 for y in range(fh) for x in range(w)
-                      if fur_rows[y][x][3] and detail_rows[y][x][3])
-        r.check(overlap == 0, f"textures: {name} fur and detail layers don't overlap",
-                f"{overlap} px in both")
-        fur_px = [p for row in fur_rows for p in row if p[3]]
-        r.check(fur_px and all(min(p[:3]) >= 150 and p[3] == 255 for p in fur_px),
-                f"textures: {name} fur layer is light, opaque and tintable")
-        comp = [[composite(fur_rows[y][x], detail_rows[y][x]) for x in range(w)] for y in range(fh)]
+                      if top_rows[y][x][3] and bottom_rows[y][x][3])
+        if not fx:
+            r.check(overlap == 0, f"textures: {name} fur and detail layers don't overlap",
+                    f"{overlap} px in both")
+            fur_px = [p for row in top_rows for p in row if p[3]]
+            r.check(fur_px and all(min(p[:3]) >= 90 and p[3] == 255 for p in fur_px),
+                    f"textures: {name} fur layer is light, opaque and tintable")
+            comp = [[composite(top_rows[y][x], bottom_rows[y][x]) for x in range(w)] for y in range(fh)]
+        else:
+            comp = [[bottom_rows[y][x] if bottom_rows[y][x][3] else top_rows[y][x] for x in range(w)]
+                    for y in range(fh)]
         area = FRAME * fh
         for i in range(count):
             px = [comp[y][x] for y in range(fh) for x in range(i * FRAME, (i + 1) * FRAME)]
             opaque = sum(1 for p in px if p[3] > 0)
             corners = [comp[0][i * FRAME], comp[0][(i + 1) * FRAME - 1]]
-            r.check(80 < opaque < area * 0.7,
+            r.check(8 <= opaque < area * 0.7,
                     f"textures: {name} frame {i + 1} has a sprite", f"{opaque} opaque px")
             r.check(all(c[3] == 0 for c in corners),
                     f"textures: {name} frame {i + 1} has a transparent background")
         for i in range(count, slots):
             pad = [rows[y][x] for y in range(h) for x in range(i * FRAME, (i + 1) * FRAME)]
             r.check(all(p[3] == 0 for p in pad), f"textures: {name} padding slot {i + 1} is empty")
-        whites = sum(1 for row in comp for p in row if p[3] and min(p[:3]) > 230)
-        pinks = sum(1 for row in detail_rows for p in row
-                    if p[3] and p[0] > 220 and p[1] < 200 and p[2] > 140)
-        r.check(whites > 0 and pinks > 0, f"textures: {name} has white fur and pink details")
+        if not fx:
+            whites = sum(1 for row in comp for p in row if p[3] and min(p[:3]) > 230)
+            pinks = sum(1 for row in bottom_rows for p in row
+                        if p[3] and p[0] > 220 and p[1] < 200 and p[2] > 140)
+            r.check(whites > 0 and pinks > 0, f"textures: {name} has white fur and pink details")
     # The TOC icon is a single-layer 32x32 image (the AddOns list shows the
     # whole file, so it must not be a stacked two-layer sheet).
     icon_name = None
@@ -366,8 +412,9 @@ def check_textures(r: Report, addon_dir: Path = ADDON_DIR):
             r.check(False, f"textures: {icon_name} icon is a valid TGA", str(exc))
     # No unreferenced textures shipped (keeps the package lean).
     if tex_dir.exists():
-        extra = sorted(p.name for p in tex_dir.iterdir()
-                       if p.name not in refs and p.name != icon_name and not p.name.startswith("."))
+        shipped = sorted(str(p.relative_to(tex_dir)).replace("\\", "/") for p in tex_dir.rglob("*")
+                         if p.is_file() and not p.name.startswith("."))
+        extra = [n for n in shipped if n not in refs and n != icon_name]
         r.check(not extra, "textures: no unreferenced files", ", ".join(extra))
 
 

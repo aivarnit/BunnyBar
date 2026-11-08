@@ -159,6 +159,53 @@ function Region:SetWidth(w) self._width = w end
 function Region:SetHeight(h) self._height = h end
 function Region:SetTextColor(r, g, b, a) self._textColor = { r, g, b, a } end
 
+-- Alpha and animations (AnimationGroup with Translation / Alpha). Playing a
+-- group schedules OnFinished after the longest startDelay + duration.
+function Region:SetAlpha(a) self._alpha = a end
+function Region:GetAlpha() return self._alpha or 1 end
+function Region:CreateAnimationGroup()
+    local owner = self
+    local ag = { _anims = {}, _scripts = {}, _playing = false, plays = 0 }
+    function ag:CreateAnimation(kind)
+        local a = { _kind = kind, _duration = 0, _delay = 0 }
+        function a:SetOffset(x, y) self._offset = { x, y } end
+        function a:SetDuration(d) self._duration = d end
+        function a:SetStartDelay(d) self._delay = d end
+        function a:SetFromAlpha(v) self._from = v end
+        function a:SetToAlpha(v) self._to = v end
+        table.insert(self._anims, a)
+        return a
+    end
+    function ag:SetToFinalAlpha(v) self._final = v end
+    function ag:SetScript(name, fn) self._scripts[name] = fn end
+    function ag:IsPlaying() return self._playing end
+    function ag:Play()
+        if self._timer then self._timer.cancelled = true end
+        local total = 0
+        for _, a in ipairs(self._anims) do total = math.max(total, a._delay + a._duration) end
+        self._playing = true
+        self.plays = self.plays + 1
+        self._timer = M.addTimer(total, function()
+            self._playing = false
+            self._timer = nil
+            if self._final then
+                for _, a in ipairs(self._anims) do
+                    if a._kind == "Alpha" and a._to then owner._alpha = a._to end
+                end
+            end
+            local fn = self._scripts.OnFinished
+            if fn then fn(self, false) end
+        end)
+    end
+    function ag:Stop()
+        if self._timer then self._timer.cancelled = true; self._timer = nil end
+        self._playing = false
+    end
+    owner._animGroups = owner._animGroups or {}
+    table.insert(owner._animGroups, ag)
+    return ag
+end
+
 -- Frame stacking / protection
 function Region:SetFrameLevel(l) self._level = l end
 function Region:GetFrameLevel() return self._level or 1 end
@@ -309,6 +356,7 @@ function M.install(env)
         table.insert(M.timers, t)
         return t
     end
+    M.addTimer = addTimer
     env.C_Timer = {
         NewTimer = function(delay, fn) return addTimer(delay, fn) end,
         After = function(delay, fn) addTimer(delay, fn) end,

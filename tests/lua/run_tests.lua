@@ -21,9 +21,15 @@ local ADDON = "BunnyBar"
 local passed, failed, failures = 0, 0, {}
 local current
 
+local SLOW = os.getenv("BUNNY_SLOW") -- print tests slower than this many seconds
+
 local function test(name, fn)
     current = name
+    local t0 = os.clock()
     local ok, err = xpcall(fn, debug.traceback)
+    local dt = os.clock() - t0
+    if SLOW and dt > tonumber(SLOW) then io.write(("  [%.1fs] %s\n"):format(dt, name)) end
+    io.flush()
     if ok then
         passed = passed + 1
         io.write("  ok   ", name, "\n")
@@ -267,7 +273,8 @@ test("ten simulated minutes: bounded, smooth, flips, rests, mostly idle", functi
         truthy(s.y >= 0 and s.y <= db.hopHeight + 1e-6, "y out of range: " .. s.y)
         if s.onUpdate then eq(s.state, "air", "OnUpdate only while airborne") end
         local dx = math.abs(s.x - prev.x)
-        if dx > maxDx then maxDx = dx end
+        -- Burrowing moves the bunny while it's invisible underground.
+        if dx > maxDx and not s.spriteHidden and not prev.spriteHidden then maxDx = dx end
         if s.facing ~= lastFacing then flips = flips + 1; lastFacing = s.facing end
         if s.state == "air" and s.destX ~= s.x then
             eq(s.facing, s.destX > s.x and 1 or -1, "faces direction of travel")
@@ -623,6 +630,7 @@ end)
 
 test("after a nap the bunny hops again before napping twice", function()
     local ns2 = bootNap(15)
+    BunnyBarDB.idleExtras, BunnyBarDB.burrow = false, false -- only nap vs hop
     advanceUntil(ns2, function(s) return s.state == "idle" end, 40)
     advanceUntil(ns2, function(s) return s.state ~= "idle" end, 20)
     eq(ns2.Bunny:GetDebugState().state, "prep", "next action is a hop")
@@ -901,11 +909,12 @@ test("toggling Action Bar 2 re-places the bunny (coalesced, deferred)", function
     local ns2 = boot(nil, { setup = stdLayout() })
     mock.advance(1.05)
     eq(anchorY(), 158)
+    local base = mock.pendingTimers()
     MultiBarBottomLeft:Hide()
     MultiBarBottomLeft:Show()
     MultiBarBottomLeft:Hide()
     eq(ns2.Placement.IsRefreshPending(), true)
-    eq(mock.pendingTimers(), 3, "1 refresh + bunny idle/fidget timers") -- refresh is coalesced
+    eq(mock.pendingTimers(), base + 1, "exactly one refresh timer") -- refresh is coalesced
     eq(anchorY(), 158, "not moved until the deferred refresh")
     mock.advance(0.3)
     eq(anchorY(), 106, "now above the XP bar")
@@ -1336,7 +1345,7 @@ test("v0.1 settings are preserved, new keys get defaults", function()
         point = "BOTTOM", relativePoint = "BOTTOM", x = 15, y = 300 }
     boot(old)
     local db = BunnyBarDB
-    eq(db.schema, 2)
+    eq(db.schema, 3)
     for k, v in pairs(old) do if k ~= "schema" then eq(db[k], v, k) end end
     eq(db.furColor, "F6F3FA"); eq(db.variation, "classic"); eq(db.hat, "none")
     eq(db.earsPlayer, true); eq(db.earsParty, true)
@@ -1361,12 +1370,12 @@ test("invalid appearance values are repaired, valid ones canonicalised", functio
     eq(BunnyBarDB.furColor, "F6F3FA")
 end)
 
-test("appearance registry: classic + none only", function()
+test("appearance registry: five styles + no hat yet", function()
     local ns2 = boot(nil)
     local A = ns2.Appearance
     truthy(A.IsValid("variation", "classic")); truthy(A.IsValid("hat", "none"))
     eq(A.IsValid("variation", "fancy"), false); eq(A.IsValid("hat", nil), false)
-    eq(#A.List("variation"), 1); eq(#A.List("hat"), 1)
+    eq(#A.List("variation"), 5); eq(#A.List("hat"), 1)
     truthy(A.SheetPath("bunny-idle.tga"):find("BunnyBar\\Textures\\bunny-idle.tga", 1, true))
 end)
 
@@ -1407,6 +1416,10 @@ test("colour stays applied through every animation and sheet change", function()
     local ns2 = boot({ schema = 2, sleepChance = 0.5, furColor = "FFB6C1" })
     local fur, detail = bunnyLayers()
     local sheets, poses = {}, {}
+    -- Make sure the rarer sheets show up whatever the random sequence.
+    for i, what in ipairs({ "burrow", "carrot", "wash", "stretch", "nap" }) do
+        C_Timer.After(40 * i, function() slash("test " .. what) end)
+    end
     mock.advance(400, 1 / 30, function()
         local r, g, b = fur:GetVertexColor()
         near(r, 1); near(g, 0xB6 / 255); near(b, 0xC1 / 255)
@@ -1416,7 +1429,7 @@ test("colour stays applied through every animation and sheet change", function()
     end)
     local n = 0
     for _ in pairs(sheets) do n = n + 1 end
-    eq(n, 6, "all six sheets shown")
+    eq(n, 9, "all nine sheets shown")
     for _, p in ipairs({ "blink", "jump", "land", "sleep2", "wake3", "drowsy2" }) do truthy(poses[p], p) end
 end)
 
@@ -1634,26 +1647,6 @@ test("saved sizes persist and map onto the new presets", function()
     eq(slash("size 97"), true); truthy(lastChat():find("custom size; presets are 16, 32, 64, 96 and 128"))
 end)
 
-test("five radios fit above the Portrait Accessories section", function()
-    local ns2, c = bootPanel({ schema = 2, size = 48 })
-    local L = ns2.Options.layout
-    local RADIO_H, LABEL_H = 18, 12
-    for i, rb in ipairs(c.sizes) do
-        local _, _, _, _, y = rb:GetPoint(1)
-        truthy(y - RADIO_H > L.portraitTop, "radio " .. i .. " overlaps the portrait section")
-        if i > 1 then
-            local _, _, _, _, prevY = c.sizes[i - 1]:GetPoint(1)
-            truthy(prevY - y >= RADIO_H, "radios " .. (i - 1) .. "/" .. i .. " overlap")
-        end
-    end
-    local _, _, _, _, cy = c.customSize:GetPoint(1)
-    local _, _, _, _, lastY = c.sizes[5]:GetPoint(1)
-    truthy(cy <= lastY - RADIO_H, "custom label below the last radio")
-    truthy(cy - LABEL_H > L.portraitTop, "custom label clear of the portrait section")
-    local _, _, _, _, ey = c.ears.earsPlayer:GetPoint(1)
-    truthy(ey < L.portraitTop, "checkboxes inside the portrait section")
-    truthy(L.stylesTop < L.portraitBottom, "styles below portraits")
-end)
 
 test("portrait checkboxes and /bunny ears stay in sync", function()
     local ns2, c = bootPanel(nil)
@@ -1675,10 +1668,56 @@ test("/bunny reset restores everything and updates the open panel", function()
     local r = bunnyLayers():GetVertexColor(); near(r, 0xF6 / 255)
 end)
 
-test("styles section is informational only (no fake selectors)", function()
-    local ns2, c = bootPanel(nil)
-    eq(c.styles._kind, "FontString")
-    truthy(c.styles:GetText():find("Classic")); truthy(c.styles:GetText():find("None"))
+test("panel sections never overlap; every control sits inside its section", function()
+    local ns2, c = bootPanel({ schema = 3, size = 48 })
+    local L = ns2.Options.layout
+    local cols = {}
+    for name, sec in pairs(L) do
+        cols[sec.x] = cols[sec.x] or {}
+        table.insert(cols[sec.x], { name = name, top = sec.top, bottom = sec.bottom })
+        truthy(sec.bottom < sec.top, name .. " has height")
+    end
+    for x, list in pairs(cols) do
+        table.sort(list, function(a, b) return a.top > b.top end)
+        for i = 2, #list do
+            truthy(list[i].top < list[i - 1].bottom,
+                ("%s overlaps %s"):format(list[i].name, list[i - 1].name))
+        end
+    end
+    -- Widths: grid radio ~130, inline radio ~70, checkbox + label ~260.
+    local function inside(ctrl, secName, h, w)
+        local _, _, _, cx, cy = ctrl:GetPoint(1)
+        local sec = L[secName]
+        truthy(cy <= sec.top and cy - h >= sec.bottom - 2,
+            ("%s control at y=%s outside [%s, %s]"):format(secName, cy, sec.bottom, sec.top))
+        truthy(cx + (w or 130) <= 660, secName .. " control too far right: " .. cx)
+        return cx, cy
+    end
+    local seen = {}
+    local function unique(ctrl, secName, h, w)
+        local cx, cy = inside(ctrl, secName, h, w)
+        local key = cx .. "," .. cy
+        truthy(not seen[key], "two controls at " .. key)
+        seen[key] = true
+    end
+    for _, rb in ipairs(c.styles) do unique(rb, "style", 18) end
+    for _, rb in ipairs(c.sizes) do unique(rb, "size", 18) end
+    inside(c.customSize, "size", 12)
+    truthy(c.customSize:IsShown(), "custom 48 shown")
+    for _, cb in pairs(c.behaviors) do unique(cb, "behaviors", 24, 260) end
+    for _, rb in ipairs(c.burrowFrequency) do unique(rb, "behaviors", 18, 70) end
+    unique(c.hearts, "interactions", 24, 260)
+    for _, rb in ipairs(c.heartIntensity) do unique(rb, "interactions", 18, 70) end
+    for _, cb in pairs(c.ears) do unique(cb, "portrait", 24, 260) end
+    eq(#c.sizes, 5)
+end)
+
+test("style radios list every registered style and select the current one", function()
+    local ns2, c = bootPanel({ schema = 3, variation = "dragon" })
+    local got = {}
+    for i, rb in ipairs(c.styles) do got[i] = rb.value end
+    eq(table.concat(got, ","), "classic,devil,angel,dragon,zombie")
+    for _, rb in ipairs(c.styles) do eq(rb:GetChecked(), rb.value == "dragon", rb.value) end
 end)
 
 ----------------------------------------------------------------------------
@@ -2259,6 +2298,633 @@ test("no per-frame work from ears or options while idle", function()
     for _, f in ipairs(mock.frames) do
         if f ~= BunnyBarFrame then eq(f:GetScript("OnUpdate"), nil) end
     end
+end)
+
+----------------------------------------------------------------------------
+-- v0.3: hopping
+----------------------------------------------------------------------------
+
+io.write("v0.3 hopping\n")
+
+-- One hop journey from idle (destination one hop away) with pose log.
+local function oneHop(opts)
+    opts = opts or {}
+    math.randomseed(opts.seed or 3)
+    local ns2 = boot({ schema = 3, idleExtras = false, burrow = false, speed = opts.speed or 1, size = 64 })
+    mock.advance(1.05)
+    local B = ns2.Bunny
+    local s0 = B:GetDebugState()
+    local step = opts.step or (1 / 120)
+    local log, ys = {}, {}
+    local prev
+    B:Perform("hop")
+    local t0 = mock.now
+    while true do
+        local s = B:GetDebugState()
+        if s.pose ~= prev then log[#log + 1] = { pose = s.pose, at = mock.now - t0, state = s.state }; prev = s.pose end
+        ys[#ys + 1] = { state = s.state, y = s.y }
+        if s.state == "idle" then break end
+        mock.advance(step, step) -- (seconds, step): one frame of `step`
+        if mock.now - t0 > 10 then error("hop never finished") end
+    end
+    return ns2, log, ys, s0
+end
+
+test("hop plays all 8 phases in order with the specified timing", function()
+    local ns2, log = oneHop({ step = 1 / 240 })
+    local H = ns2.Bunny.HOP_TIMING
+    local poses = {}
+    for i, e in ipairs(log) do poses[i] = e.pose end
+    local str = table.concat(poses, ",")
+    -- A journey may take several hops: (prep push jump apex fall contact land)+ recover idle
+    truthy(str:match("^prep,push,jump,apex,fall,contact,land"), str)
+    truthy(str:match("recover,idle$"), str)
+    local want = { prep = H.prep, push = H.push, contact = H.contact, land = H.land, recover = H.recover }
+    for i = 1, #log - 1 do
+        local w = want[log[i].pose]
+        if w then near(log[i + 1].at - log[i].at, w, 2.5 / 240, log[i].pose) end
+    end
+end)
+
+test("hop phases scale with speed; air poses follow progress thresholds", function()
+    local ns2, log = oneHop({ speed = 2, step = 1 / 240 })
+    local H = ns2.Bunny.HOP_TIMING
+    for i = 1, #log - 1 do
+        if log[i].pose == "prep" then near(log[i + 1].at - log[i].at, H.prep / 2, 2.5 / 240, "prep at 2x") end
+    end
+    local A = ns2.Bunny.AirPose
+    eq(A(0.0), "jump"); eq(A(0.37), "jump"); eq(A(0.38), "apex"); eq(A(0.63), "apex")
+    eq(A(0.64), "fall"); eq(A(0.99), "fall"); eq(A(1.0), "fall")
+end)
+
+test("grounded hop phases have no vertical offset (no jitter)", function()
+    local _, _, ys = oneHop({ step = 1 / 240 })
+    for _, e in ipairs(ys) do
+        if e.state ~= "air" then eq(e.y, 0, "y in " .. e.state) end
+    end
+end)
+
+test("hop is frame-rate independent", function()
+    local function run(step)
+        local ns2, log = oneHop({ seed = 9, step = step })
+        local s = ns2.Bunny:GetDebugState()
+        return log[#log].at, s.x, s.hops
+    end
+    local t30, x30, h30 = run(1 / 30)
+    local t144, x144, h144 = run(1 / 144)
+    eq(x30, x144, "same landing spot"); eq(h30, h144, "same number of hops")
+    near(t30, t144, 0.15, "same duration within frame quantisation")
+end)
+
+----------------------------------------------------------------------------
+-- v0.3: idle behaviours
+----------------------------------------------------------------------------
+
+io.write("v0.3 behaviours\n")
+
+local function seqNames(seq)
+    local out = {}
+    for i, st in ipairs(seq) do out[i] = st[1] end
+    return out
+end
+
+-- Play a behaviour via /bunny test and record its poses until idle.
+local function playTest(what, saved)
+    local ns2 = boot(saved or { schema = 3 })
+    mock.advance(1.05)
+    local x0 = ns2.Bunny:GetDebugState().x
+    eq(slash("test " .. what), true, "/bunny test " .. what)
+    local log = recordPoses(ns2, function(s) return s.state == "idle" end, 20)
+    return ns2, log, x0
+end
+
+test("carrot: full sequence with three shrinking bites, then idle", function()
+    local ns2, log, x0 = playTest("carrot")
+    local poses = {}
+    for i = 1, #log - 1 do poses[i] = log[i].pose end
+    eq(table.concat(poses, ","), table.concat(seqNames(ns2.Bunny.SEQUENCES.carrot), ","))
+    -- Carrot gets smaller: bite1 (full) -> chew1 -> bite2 -> chew2 -> bite3 -> chew3 (gone)
+    local order = {}
+    for _, p in ipairs(poses) do if p:find("^carrotBite") or p:find("^carrotChew") then order[#order + 1] = p end end
+    eq(table.concat(order, ","), "carrotBite1,carrotChew1,carrotBite2,carrotChew2,carrotBite3,carrotChew3")
+    local total = 0
+    for _, st in ipairs(ns2.Bunny.SEQUENCES.carrot) do total = total + st[2] end
+    truthy(total >= 3 and total <= 5, "carrot lasts 3-5 s: " .. total)
+    near(log[#log].at - log[1].at, total, 0.1, "played at its real timing")
+    eq(ns2.Bunny:GetDebugState().x, x0, "no movement while eating")
+    eq(ns2.Bunny:GetDebugState().onUpdate, false)
+end)
+
+test("wash, scratch, stretch and look each play their own frames, then idle", function()
+    for _, name in ipairs({ "wash", "scratch", "stretch", "look" }) do
+        local ns2, log, x0 = playTest(name)
+        local poses = {}
+        for i = 1, #log - 1 do poses[i] = log[i].pose end
+        local want = seqNames(ns2.Bunny.SEQUENCES[name])
+        -- consecutive duplicate poses collapse in the log
+        local dedup = {}
+        for _, p in ipairs(want) do if dedup[#dedup] ~= p then dedup[#dedup + 1] = p end end
+        eq(table.concat(poses, ","), table.concat(dedup, ","), name)
+        local distinct = {}
+        for _, p in ipairs(want) do distinct[p] = true end
+        local n = 0
+        for _ in pairs(distinct) do n = n + 1 end
+        truthy(n >= 4 or (name == "look" and n >= 3), name .. " has enough distinct frames: " .. n)
+        eq(ns2.Bunny:GetDebugState().x, x0, name .. ": no movement")
+        eq(log[#log].pose, "idle")
+    end
+end)
+
+test("look-around returns to the previous facing", function()
+    local ns2 = boot({ schema = 3 })
+    mock.advance(1.05)
+    local f0 = ns2.Bunny:GetDebugState().facing
+    slash("test look")
+    advanceUntil(ns2, function(s) return s.state == "idle" end, 10)
+    eq(ns2.Bunny:GetDebugState().facing, f0)
+end)
+
+test("behaviour choice respects settings and never repeats", function()
+    local ns2 = boot({ schema = 3 })
+    local P = ns2.Bunny.PickBehavior
+    local counts = {}
+    for i = 1, 2000 do
+        local r = (i - 0.5) / 2000
+        local b = P(function() return r end, "wash")
+        counts[b] = (counts[b] or 0) + 1
+        truthy(b ~= "wash", "excluded behaviour never picked")
+    end
+    truthy(counts.carrot and counts.scratch and counts.stretch and counts.look)
+    BunnyBarDB.carrot = false
+    for i = 1, 200 do truthy(P(function() return (i - 0.5) / 200 end) ~= "carrot") end
+    BunnyBarDB.idleExtras = false
+    eq(P(math.random), nil)
+end)
+
+test("thirty simulated minutes: behaviours, naps, hops, rare burrows, no leaks", function()
+    math.randomseed(77)
+    local ns2 = boot({ schema = 3, burrowFrequency = "often" })
+    local B = ns2.Bunny
+    local db = BunnyBarDB
+    local minX, maxX = ns2.Util.TrackBounds(db.trackWidth, db.size)
+    local updates, frames = 0, 0
+    mock.advance(1800, 1 / 20, function()
+        local s = B:GetDebugState()
+        frames = frames + 1
+        if s.onUpdate then updates = updates + 1; eq(s.state, "air") end
+        truthy(s.x >= minX - 1e-6 and s.x <= maxX + 1e-6, "x in bounds")
+        if s.state ~= "burrow" then
+            eq(s.spriteHidden, false, "sprite visible outside burrows")
+            truthy(not s.holeA and not s.holeB, "no stray holes outside burrows (" .. s.state .. ")")
+        end
+    end)
+    local s = B:GetDebugState()
+    local total = 0
+    for _, n in pairs(s.behaviors) do total = total + n end
+    truthy(total >= 10, "behaviours: " .. total)
+    truthy(s.naps >= 2, "naps: " .. s.naps)
+    truthy(s.hops >= 50, "hops: " .. s.hops)
+    truthy(s.burrows >= 3 and s.burrows <= 15, "burrows with a 2-min cooldown: " .. s.burrows)
+    truthy(updates / frames < 0.15, "OnUpdate rarely active")
+    truthy(mock.pendingTimers() <= 6, "timers don't pile up: " .. mock.pendingTimers())
+end)
+
+----------------------------------------------------------------------------
+-- v0.3: burrowing
+----------------------------------------------------------------------------
+
+io.write("v0.3 burrowing\n")
+
+local function bootAt(xFraction)
+    local ns2 = boot({ schema = 3, idleExtras = false })
+    mock.advance(1.05)
+    -- Move the bunny to a known spot by hopping there (public API only).
+    local B = ns2.Bunny
+    local minX, maxX = ns2.Util.TrackBounds(BunnyBarDB.trackWidth, BunnyBarDB.size)
+    return ns2, minX, maxX
+end
+
+local function burrowRun(ns2)
+    local log = { }
+    local prevPose, prevHidden
+    local states = {}
+    local t0 = mock.now
+    while true do
+        local s = ns2.Bunny:GetDebugState()
+        if s.pose ~= prevPose or s.spriteHidden ~= prevHidden then
+            log[#log + 1] = { pose = s.spriteHidden and "(underground)" or s.pose, a = s.holeA, b = s.holeB, x = s.x, at = mock.now - t0 }
+            prevPose, prevHidden = s.pose, s.spriteHidden
+        end
+        if s.state == "idle" and #log > 1 then break end
+        mock.advance(1 / 120)
+        if mock.now - t0 > 20 then error("burrow never finished") end
+    end
+    return log
+end
+
+test("burrow left-to-right and right-to-left: full sequence, holes, cleanup", function()
+    for _, dir in ipairs({ 1, -1 }) do
+        local ns2, minX, maxX = bootAt()
+        local B = ns2.Bunny
+        -- Place the bunny at one end via a direct journey.
+        B:Perform("hop")
+        advanceUntil(ns2, function(s) return s.state == "idle" end, 10)
+        local s = B:GetDebugState()
+        eq(slash("test burrow"), true)
+        local from = B:GetDebugState().burrowFrom
+        local to = B:GetDebugState().burrowTo
+        truthy(to >= minX and to <= maxX, "destination within track")
+        local span = maxX - minX
+        if from - minX > maxX - from then truthy(to <= minX + span * 0.25 + 1e-6, "goes to the far (left) side")
+        else truthy(to >= maxX - span * 0.25 - 1e-6, "goes to the far (right) side") end
+        eq(B:GetDebugState().facing, to > from and 1 or -1, "faces the travel direction")
+        local log = burrowRun(ns2)
+        local seq = {}
+        for _, e in ipairs(log) do seq[#seq + 1] = e.pose end
+        local str = table.concat(seq, ",")
+        truthy(str:find("burrowSniffA,burrowSniffB", 1, true), str)
+        truthy(str:find("burrowDigA,burrowDigB", 1, true), str)
+        truthy(str:find("burrowSink1,burrowSink2,burrowSink3,burrowSink4,(underground),burrowEmerge1,burrowEmerge2,burrowPop", 1, true), str)
+        truthy(str:find("burrowShakeA,burrowShakeB", 1, true), str)
+        -- Holes: A appears while digging and grows; B appears after the trip.
+        local sawA, sawB, sawBothOpen = {}, false, false
+        for _, e in ipairs(log) do
+            if e.a then sawA[e.a] = true end
+            if e.b then sawB = true end
+            if e.a == 3 and e.b == 3 then sawBothOpen = true end
+            if e.pose == "(underground)" then eq(e.a, 3, "origin hole open while underground") end
+        end
+        truthy(sawA[1] and sawA[2] and sawA[3], "origin hole mound -> hole")
+        truthy(sawB and sawBothOpen, "second hole opens")
+        local final = B:GetDebugState()
+        eq(final.holeA, nil); eq(final.holeB, nil); eq(final.spriteHidden, false)
+        eq(final.x, to, "bunny ends at the destination")
+        local holes = B:GetHoles()
+        for _, h in pairs(holes) do eq(h.back:IsShown(), false); eq(h.front:IsShown(), false) end
+        eq(final.onUpdate, false)
+    end
+end)
+
+test("burrow holes stay aligned with the ground and the bunny frame", function()
+    local ns2 = boot({ schema = 3, idleExtras = false })
+    mock.advance(1.05)
+    slash("test burrow")
+    advanceUntil(ns2, function(s) return s.holeA == 3 end, 10)
+    local h = ns2.Bunny:GetHoles().A
+    local p, rel, rp, x, y = h.back:GetPoint(1)
+    eq(p, "BOTTOMLEFT"); eq(rel, BunnyBarFrame); eq(y, 0, "on the ground line")
+    eq(h.back:GetWidth(), BunnyBarDB.size)
+    eq(h.back._layer, "BORDER", "behind the bunny"); eq(h.front._layer, "OVERLAY", "rim in front")
+    local fl, fr, ft, fb = h.front:GetTexCoord()
+    eq(ft, 0.5); eq(fb, 1)
+end)
+
+test("burrow interrupted in every phase cleans up completely", function()
+    for _, phase in ipairs({ "burrowSniffA", "burrowDigB", "burrowSink3", "(underground)", "burrowEmerge1", "burrowShakeA" }) do
+        for _, how in ipairs({ "hide", "uihide", "reset", "size", "test" }) do
+            local ns2 = boot({ schema = 3, idleExtras = false })
+            mock.advance(1.05)
+            slash("test burrow")
+            advanceUntil(ns2, function(s)
+                return (phase == "(underground)" and s.spriteHidden) or s.pose == phase
+            end, 10)
+            if how == "hide" then slash("hide")
+            elseif how == "uihide" then UIParent:Hide()
+            elseif how == "reset" then slash("reset")
+            elseif how == "size" then slash("size 48")
+            else slash("test") end
+            local s = ns2.Bunny:GetDebugState()
+            local label = phase .. "/" .. how
+            eq(s.holeA, nil, label); eq(s.holeB, nil, label); eq(s.spriteHidden, false, label)
+            eq(s.burrowing, false, label)
+            local holes = ns2.Bunny:GetHoles()
+            for _, h in pairs(holes) do eq(h.back:IsShown(), false, label); eq(h.front:IsShown(), false, label) end
+            if how == "hide" or how == "uihide" then
+                eq(s.state, "stopped", label); eq(mock.pendingTimers() <= 1, true, label .. " timers")
+            end
+            if how == "uihide" then UIParent:Show() end
+            if how == "hide" then slash("show") end
+            mock.advance(30)
+            s = ns2.Bunny:GetDebugState()
+            local minX, maxX = ns2.Util.TrackBounds(BunnyBarDB.trackWidth, BunnyBarDB.size)
+            truthy(s.x >= minX and s.x <= maxX, label .. " in bounds")
+        end
+    end
+end)
+
+test("burrow rarity: cooldown by frequency, off switch, too-short track", function()
+    local function countBurrows(freq, minutes)
+        math.randomseed(5)
+        local ns2 = boot({ schema = 3, idleExtras = false, sleepChance = 0, burrowFrequency = freq })
+        mock.advance(minutes * 60, 1 / 10)
+        return ns2.Bunny:GetDebugState().burrows
+    end
+    eq(countBurrows("normal", 3.9), 0, "nothing before the 4-minute cooldown")
+    local rare, often = countBurrows("rare", 30), countBurrows("often", 30)
+    truthy(often > rare, ("often %d > rare %d"):format(often, rare))
+    truthy(rare <= 30 / 7 + 1, "rare respects its 7-minute cooldown: " .. rare)
+    math.randomseed(5)
+    local ns2 = boot({ schema = 3, idleExtras = false, burrow = false, burrowFrequency = "often" })
+    mock.advance(1800, 1 / 10)
+    eq(ns2.Bunny:GetDebugState().burrows, 0, "burrow off")
+    -- A track barely wider than the bunny can't burrow.
+    ns2 = boot({ schema = 3, trackWidth = 80 })
+    mock.advance(1.05)
+    eq(slash("test burrow"), false); truthy(lastChat():find("too short"))
+end)
+
+----------------------------------------------------------------------------
+-- v0.3: styles
+----------------------------------------------------------------------------
+
+io.write("v0.3 styles\n")
+
+test("five styles: textures from their own folder, same frames", function()
+    for _, id in ipairs({ "classic", "devil", "angel", "dragon", "zombie" }) do
+        local ns2 = boot({ schema = 3, variation = id })
+        local fur = bunnyLayers()
+        local folder = id == "classic" and "Textures\\bunny%-idle%.tga" or ("Textures\\" .. id .. "\\bunny%-idle%.tga")
+        truthy(fur._texture:find(folder), id .. ": " .. fur._texture)
+        local data = ns2.SpriteData[id]
+        truthy(data, "sprite data for " .. id)
+        for key, sheet in pairs(ns2.Bunny.SHEETS) do
+            eq(#data[sheet.file], sheet.count, id .. " " .. sheet.file .. " frame count")
+        end
+    end
+end)
+
+test("style follows its default fur unless a custom colour was picked", function()
+    local ns2 = boot({ schema = 3 })
+    eq(slash("style devil"), true)
+    eq(BunnyBarDB.variation, "devil"); eq(BunnyBarDB.furColor, "E06E7C", "devil default fur")
+    eq(slash("style angel"), true); eq(BunnyBarDB.furColor, "FFF6E6")
+    eq(slash("color #87CEEB"), true)
+    eq(slash("style dragon"), true)
+    eq(BunnyBarDB.variation, "dragon"); eq(BunnyBarDB.furColor, "87CEEB", "custom colour kept")
+    eq(slash("color reset"), true); eq(BunnyBarDB.furColor, "86C784", "reset -> style default")
+    eq(slash("style ghost"), false); truthy(lastChat():find("not a style"))
+    eq(BunnyBarDB.variation, "dragon")
+    eq(slash("style"), true); truthy(lastChat():find("style is dragon"))
+end)
+
+test("fur colour applies on every style and every sheet", function()
+    for _, id in ipairs({ "classic", "devil", "angel", "dragon", "zombie" }) do
+        math.randomseed(13)
+        local ns2 = boot({ schema = 3, variation = id, furColor = "FFB6C1", sleepChance = 0.4, burrowFrequency = "often" })
+        local fur, detail = bunnyLayers()
+        local sheets = {}
+        mock.advance(400, 1 / 15, function()
+            local r, g, b = fur:GetVertexColor()
+            near(r, 1); near(g, 0xB6 / 255); near(b, 0xC1 / 255)
+            eq(detail._vertex, nil)
+            sheets[fur._texture] = true
+        end)
+        local n = 0
+        for _ in pairs(sheets) do n = n + 1 end
+        truthy(n >= 5, id .. " sheets seen: " .. n)
+    end
+end)
+
+test("changing style mid-nap or mid-behaviour doesn't reset the animation", function()
+    local ns2 = bootNap(21)
+    advanceUntil(ns2, function(s) return s.pose == "sleep2" end, 30)
+    local before = ns2.Bunny:GetDebugState()
+    slash("style zombie")
+    local after = ns2.Bunny:GetDebugState()
+    eq(after.state, before.state); eq(after.pose, "sleep2")
+    truthy(bunnyLayers()._texture:find("zombie"), "texture switched immediately")
+    -- mid-behaviour
+    ns2 = boot({ schema = 3 })
+    mock.advance(1.05)
+    slash("test carrot")
+    advanceUntil(ns2, function(s) return s.pose == "carrotHold" end, 10)
+    slash("style angel")
+    eq(ns2.Bunny:GetDebugState().state, "behavior"); eq(ns2.Bunny:GetDebugState().pose, "carrotHold")
+    truthy(bunnyLayers()._texture:find("angel\\bunny%-carrot"))
+end)
+
+test("schema 2 settings migrate to 3 with behaviour and heart defaults", function()
+    boot({ schema = 2, size = 96, furColor = "112233", variation = "classic", earsParty = false, speed = 1.5 })
+    local db = BunnyBarDB
+    eq(db.schema, 3); eq(db.size, 96); eq(db.furColor, "112233"); eq(db.earsParty, false); eq(db.speed, 1.5)
+    eq(db.idleExtras, true); eq(db.carrot, true); eq(db.burrow, true); eq(db.burrowFrequency, "normal")
+    eq(db.hearts, true); eq(db.heartIntensity, "normal"); eq(db.variation, "classic")
+    boot({ schema = 3, burrowFrequency = "SOMETIMES", heartIntensity = "EXTRA", variation = "Devil" })
+    eq(BunnyBarDB.burrowFrequency, "normal"); eq(BunnyBarDB.heartIntensity, "extra")
+    eq(BunnyBarDB.variation, "classic", "unknown spelling falls back")
+end)
+
+----------------------------------------------------------------------------
+-- v0.3: hover hearts
+----------------------------------------------------------------------------
+
+io.write("v0.3 hover hearts\n")
+
+local function bootHearts(saved)
+    local ns2 = boot(saved or { schema = 3, idleExtras = false, burrow = false, sleepChance = 0 })
+    mock.advance(1.05)
+    return ns2
+end
+
+local function pointAt(ns2, fx, fy)
+    -- A point inside the current sprite box at fractions (fx, fy).
+    local l, r, b, t = ns2.Bunny:GetSpriteBox()
+    return l + (r - l) * fx, b + (t - b) * fy
+end
+
+test("hit test: sprite box only, mirrored, nothing when underground", function()
+    local ns2 = bootHearts()
+    local B = ns2.Bunny
+    local l, r, b, t = B:GetSpriteBox()
+    truthy(l and r > l and t > b)
+    truthy(B:HitTest(pointAt(ns2, 0.5, 0.5)))
+    -- Empty parts of the track never count.
+    local f = BunnyBarFrame
+    eq(B:HitTest(f:GetLeft() + 2, f:GetBottom() + 2), false, "far left of the track")
+    eq(B:HitTest(r + 20, (b + t) / 2), false, "beside the bunny")
+    eq(B:HitTest((l + r) / 2, t + 20), false, "above the bunny")
+    -- The box is tight (smaller than the 64x64 frame).
+    truthy(r - l < BunnyBarDB.size and t - b < BunnyBarDB.size + 0.01)
+    -- Underground: invisible, so not hoverable.
+    slash("test burrow")
+    advanceUntil(ns2, function(s) return s.spriteHidden end, 10)
+    eq(B:GetSpriteBox(), nil); eq(B:HitTest((l + r) / 2, (b + t) / 2), false)
+end)
+
+test("hearts appear while hovering, never while hovering empty track", function()
+    local ns2 = bootHearts()
+    local cx, cy = pointAt(ns2, 0.5, 0.6)
+    mock.cursor[1], mock.cursor[2] = cx, cy
+    mock.advance(2)
+    local st = ns2.Hearts.GetState()
+    truthy(st.emitted >= 4, "emitted while hovering: " .. st.emitted)
+    truthy(st.busy <= ns2.Hearts.INTENSITY.normal.max)
+    local before = st.emitted
+    local f = BunnyBarFrame
+    mock.cursor[1], mock.cursor[2] = f:GetLeft() + 5, f:GetBottom() + 5
+    mock.advance(2)
+    eq(ns2.Hearts.GetState().emitted, before, "no hearts over empty track")
+end)
+
+test("hearts never wake a sleeping bunny; sleep and hearts run independently", function()
+    local ns2 = bootNap(21)
+    advanceUntil(ns2, function(s) return s.state == "sleep" end, 30)
+    local wakeAt = ns2.Bunny:GetDebugState().sleepUntil
+    mock.cursor[1], mock.cursor[2] = pointAt(ns2, 0.5, 0.5)
+    local log = recordPoses(ns2, function(s) return s.state == "waking" end, 40)
+    truthy(ns2.Hearts.GetState().emitted >= 5, "hearts while asleep")
+    truthy(mock.now >= wakeAt - 0.01, "woke only when the nap was over")
+    for i = 1, #log - 1 do
+        local p = log[i].pose
+        truthy(p:find("^sleep") or p:find("^liedown"), "only sleep poses until waking: " .. p)
+    end
+end)
+
+test("hearts work during hops, behaviours and digging", function()
+    for _, what in ipairs({ "hop", "carrot", "burrow" }) do
+        local ns2 = bootHearts({ schema = 3, idleExtras = false, sleepChance = 0 })
+        slash("test " .. what)
+        local emitted = 0
+        mock.advance(1.2, 1 / 60, function()
+            local l = ns2.Bunny:GetSpriteBox()
+            if l then mock.cursor[1], mock.cursor[2] = pointAt(ns2, 0.5, 0.5) end
+        end)
+        truthy(ns2.Hearts.GetState().emitted >= 2, what .. ": " .. ns2.Hearts.GetState().emitted)
+    end
+end)
+
+test("click-through: bunny, hearts layer and particles never take the mouse", function()
+    local ns2 = bootHearts()
+    mock.cursor[1], mock.cursor[2] = pointAt(ns2, 0.5, 0.5)
+    mock.advance(1)
+    eq(BunnyBarFrame:IsMouseEnabled(), false)
+    local layer = ns2.Hearts.GetState().layer
+    truthy(layer, "hearts layer exists")
+    eq(layer:IsMouseEnabled(), false)
+    eq(layer._parent, BunnyBarFrame, "contained in BunnyBar's own frame")
+    eq(BunnyBarFrame:GetScript("OnEnter"), nil, "no reliance on OnEnter")
+end)
+
+test("hover polling is throttled: slow when far, fast only when near, off when unused", function()
+    local ns2 = bootHearts()
+    mock.cursor[1], mock.cursor[2] = 10, 1000 -- far away
+    local c0 = ns2.Hearts.GetState().checks
+    mock.advance(10)
+    local far = ns2.Hearts.GetState().checks - c0
+    truthy(far >= 36 and far <= 44, "about 4 checks per second when far: " .. far)
+    mock.cursor[1], mock.cursor[2] = pointAt(ns2, 0.5, 0.5)
+    c0 = ns2.Hearts.GetState().checks
+    mock.advance(10)
+    local nearChecks = ns2.Hearts.GetState().checks - c0
+    truthy(nearChecks >= 180 and nearChecks <= 210, "about 20 per second when near: " .. nearChecks)
+    slash("hearts off")
+    eq(ns2.Hearts.GetState().polling, false, "no polling when hearts are off")
+    c0 = ns2.Hearts.GetState().checks
+    mock.advance(5)
+    eq(ns2.Hearts.GetState().checks, c0)
+    slash("hearts on")
+    eq(ns2.Hearts.GetState().polling, true)
+    UIParent:Hide()
+    eq(ns2.Hearts.GetState().polling, false, "stops when the UI is hidden")
+    UIParent:Show()
+    eq(ns2.Hearts.GetState().polling, true)
+    slash("hide")
+    eq(ns2.Hearts.GetState().polling, false, "stops when the bunny is hidden")
+end)
+
+test("heart particles: animated, limited per intensity, removed when done", function()
+    local ns2 = bootHearts({ schema = 3, idleExtras = false, burrow = false, sleepChance = 0, heartIntensity = "subtle" })
+    mock.cursor[1], mock.cursor[2] = pointAt(ns2, 0.5, 0.5)
+    mock.advance(5, 1 / 30, function()
+        truthy(ns2.Hearts.GetState().busy <= 3, "subtle: at most 3 at once")
+    end)
+    local layer = ns2.Hearts.GetState().layer
+    local tex
+    for _, ch in ipairs(layer._children) do if ch._animGroups then tex = ch end end
+    truthy(tex, "particle texture")
+    local ag = tex._animGroups[1]
+    local kinds = {}
+    for _, a in ipairs(ag._anims) do kinds[a._kind] = a end
+    truthy(kinds.Translation and kinds.Alpha, "rises and fades with native animations")
+    eq(kinds.Translation._offset[2], math.floor(BunnyBarDB.size * 0.55 + 0.5), "rises above the bunny")
+    eq(kinds.Alpha._to, 0)
+    -- Move away: every particle finishes and is hidden; pool stays small.
+    mock.cursor[1], mock.cursor[2] = 10, 1000
+    mock.advance(2)
+    eq(ns2.Hearts.GetState().busy, 0)
+    for _, ch in ipairs(layer._children) do eq(ch:IsShown(), false) end
+    truthy(ns2.Hearts.GetState().pool <= ns2.Hearts.POOL_SIZE)
+    -- Hiding the bunny clears hearts immediately.
+    mock.cursor[1], mock.cursor[2] = pointAt(ns2, 0.5, 0.5)
+    mock.advance(0.5)
+    truthy(ns2.Hearts.GetState().busy > 0)
+    slash("hide")
+    eq(ns2.Hearts.GetState().busy, 0)
+    for _, ch in ipairs(layer._children) do eq(ch:IsShown(), false) end
+end)
+
+test("/bunny test hearts bursts; settings commands validate", function()
+    local ns2 = bootHearts()
+    eq(slash("test hearts"), true)
+    mock.advance(2)
+    truthy(ns2.Hearts.GetState().emitted >= 4)
+    eq(slash("hearts extra"), true); eq(BunnyBarDB.heartIntensity, "extra")
+    eq(slash("hearts off"), true); eq(BunnyBarDB.hearts, false)
+    eq(slash("test hearts"), false); truthy(lastChat():find("hearts are off"))
+    eq(slash("hearts sometimes"), false)
+    eq(slash("burrow rare"), true); eq(BunnyBarDB.burrowFrequency, "rare")
+    eq(slash("burrow off"), true); eq(BunnyBarDB.burrow, false)
+    eq(slash("idle off"), true); eq(BunnyBarDB.idleExtras, false)
+    eq(slash("carrot off"), true); eq(BunnyBarDB.carrot, false)
+    eq(slash("test dance"), false); truthy(lastChat():find("unknown test"))
+end)
+
+test("hearts without cursor or animation APIs stay off quietly", function()
+    local ns2 = bootHearts()
+    local saved = GetCursorPosition
+    rawset(_G, "GetCursorPosition", nil) -- (rawset: test setup, not an addon global)
+    ns2.Hearts.Refresh()
+    eq(ns2.Hearts.IsActive(), false)
+    eq(ns2.Hearts.GetState().polling, false)
+    mock.advance(2)
+    rawset(_G, "GetCursorPosition", saved)
+    -- Textures without CreateAnimationGroup: Emit refuses instead of erroring.
+    local ns3 = bootHearts()
+    local orig = nil
+    local mt = getmetatable(BunnyBarFrame).__index
+    orig = mt.CreateAnimationGroup
+    mt.CreateAnimationGroup = nil
+    local ok = ns3.Hearts.Emit(1000, 200)
+    eq(ok, false)
+    mt.CreateAnimationGroup = orig
+end)
+
+test("hearts work in combat (no protected operations)", function()
+    local ns2 = bootHearts()
+    mock.combat = true
+    mock.cursor[1], mock.cursor[2] = pointAt(ns2, 0.5, 0.5)
+    mock.advance(1)
+    truthy(ns2.Hearts.GetState().emitted >= 2)
+    mock.combat = false
+end)
+
+test("behaviour and heart settings persist and sync with the panel", function()
+    local ns2, c = bootPanel({ schema = 3 })
+    c.behaviors.carrot:Click()
+    c.burrowFrequency[1]:Click()
+    c.heartIntensity[3]:Click()
+    c.hearts:Click()
+    eq(BunnyBarDB.carrot, false); eq(BunnyBarDB.burrowFrequency, "rare")
+    eq(BunnyBarDB.heartIntensity, "extra"); eq(BunnyBarDB.hearts, false)
+    eq(ns2.Hearts.GetState().polling, false)
+    local saved = BunnyBarDB
+    local ns3, c3 = bootPanel(saved)
+    eq(c3.behaviors.carrot:GetChecked(), false); eq(c3.burrowFrequency[1]:GetChecked(), true)
+    eq(c3.heartIntensity[3]:GetChecked(), true); eq(c3.hearts:GetChecked(), false)
+    slash("burrow often")
+    eq(c3.burrowFrequency[3]:GetChecked(), true, "slash -> panel")
+    c3.styles[2]:Click()
+    eq(BunnyBarDB.variation, "devil")
 end)
 
 ----------------------------------------------------------------------------

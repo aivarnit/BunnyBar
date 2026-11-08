@@ -13,6 +13,7 @@ Research was done on 7 November 2026, three days after WoW Forever launched on 4
 | AddOns folder | `World of Warcraft/_forever_/Interface/AddOns` (beta: `_classic_beta_`) | Add-on managers and guides. Not stated in any Blizzard post that was found. |
 | TOC suffixes | `_Forever.toc` / `_Camelot.toc` reportedly supported for multi-client addons | Single source. Not used by BunnyBar. |
 | Settings API | Modern `Settings.RegisterCanvasLayoutCategory` / `RegisterAddOnCategory` / `OpenToCategory` (Mainline API). | Works in game (v0.2.0, maintainer test). Still feature-detected, with fallbacks. |
+| Hover/animation APIs (v0.3) | `GetCursorPosition`, `Texture:CreateAnimationGroup` with `Translation`/`Alpha`, `SetToFinalAlpha`, `C_Timer.NewTimer` | **Unverified on Forever.** Feature-detected; hearts stay off quietly if they're missing. |
 | Unit frame / portrait names | Modern `PlayerFrame.PlayerFrameContainer.PlayerPortrait`, `PartyFrame.MemberFrameN.Portrait`; legacy names also tried. | Portrait ears work in game (v0.2.0, maintainer test). Which candidate name resolves on Forever wasn't recorded; `/bunny ears debug` shows it. |
 | Bottom bar frame names | Unknown for Forever. See [Frame names to verify](#frame-names-to-verify-in-game). | **Unverified.** Every name is optional. |
 | SavedVariables | Standard. Ready at `ADDON_LOADED`. An early-beta restore bug was reportedly fixed in build 70009. | Guides |
@@ -39,14 +40,17 @@ addon/BunnyBar/
 ├── BunnyBar.toc     metadata + load order
 ├── Util.lua         pure helpers: math, parsing, hex/HSV colour, safe frame reads
 ├── Config.lua       defaults, limits, schema migration, Config.Set/Notify, slash commands
-├── Appearance.lua   cosmetic registries (variations, hats) + layered, tinted sprites
+├── Appearance.lua   cosmetic registries (5 styles, hats) + layered, tinted sprites
+├── SpriteData.lua   GENERATED per-frame sprite bounds (hover hit-testing)
 ├── Placement.lua    automatic placement above the highest visible bottom bar
-├── Animation.lua    the bunny frame, poses, state machine, ApplyPosition, stats
+├── Animation.lua    the bunny frame, poses, behaviour state machine, burrow, hit test
+├── Hearts.lua       hover hearts: throttled cursor check + pooled particles
 ├── Ears.lua         bunny ears over the player / party portraits
 ├── Options.lua      Settings panel (colour picker, size presets, accessories)
 ├── Core.lua         event wiring
 └── Textures/        generated sprite strips (TGA, 32-bit BGRA, power-of-two),
-                     each with a fur layer on top and a detail layer below
+    ├── *.tga        classic sheets + shared ears / burrow-fx / heart / icon
+    └── devil/ angel/ dragon/ zombie/   one full sheet set per style
 scripts/
 ├── generate_sprites.py   pixel art -> TGA + PNG preview (stdlib only)
 ├── validate.py           static checks + runs the Lua test-suite
@@ -72,6 +76,20 @@ In game, each layer is its own texture showing the same frame, with `SetTexCoord
 - the default colour, `#F6F3FA` (the original fur tone), reproduces the v0.1 art within 1/255. The one exception is the cotton tail, which now uses the main fur tone (5/255 darker) so it can be recoloured.
 
 `Appearance.lua` also holds small **registries** for future cosmetics: `variation` (sprite set / fur pattern; currently only `classic`) and `hat` (currently only `none`). Animation code only asks Appearance to "show sheet X, frame N, mirrored or not", so new layers such as hats, accessories or separately tinted accessory colours can be added without touching movement or timing. The options panel shows the current style as text and doesn't offer selectors until there is more than one choice.
+
+## Styles (v0.3)
+
+Five variations are registered in `Appearance.lua`: classic, devil, angel, dragon and zombie. Each has a label, a texture folder and a default fur colour. Every style has **the same nine sheets with the same frames**, all drawn from **one shared set of pose data** in `generate_sprites.py`. A style is a small class of drawing hooks (`behind`, `tail`, `fur_marks`, `face`, `over_head`, `after_outline`) that adds horns, halo, wings, tails, patches and stitches *relative to each pose's head, body and tail*. That's why every style supports every animation automatically.
+
+**Investigated alternative: shared base sheets plus per-style overlay layers.** This was rejected for three reasons:
+
+1. Several styles change the silhouette (the zombie's floppy ear, and the devil and dragon tails that replace the cotton tail), and an overlay can't erase base pixels.
+2. Overlays need the same frame grid, so they would save at most half of the texture space, at the price of a third runtime layer, more textures to keep in sync, and harder previews.
+3. The client only loads the active style's textures, and transparent TGA pixels compress roughly 10× in the ZIP.
+
+**Colour:** fur pixels, including the zombie patch tone, dragon scales, the dragon's tail, the mouth and the drowsy eyelid, are fur tones in the tinted layer. Horns, halo, wings, stitches, eyes and the rest are fixed detail colours. `Config.SetStyle` switches to the new style's default fur only if the current colour is still the previous style's default, so a custom colour is kept. Style changes call `Bunny:RefreshAppearance()`, which re-shows the *current* pose from the new folder without restarting the behaviour.
+
+**Hats** stay a registry with only `none`; the panel shows no hat selector until there's a real choice.
 
 ## Options panel
 
@@ -156,6 +174,29 @@ UIParent
 
 ## State machine
 
+**One primary behaviour at a time.** The states are:
+
+- `idle`
+- the hop: `prep`, `push`, `air`, `contact`, `land`, `recover`
+- naps: `drowsy`, `liedown`, `sleep`, `rise`, `waking`
+- `behavior` (carrot, wash, scratch, stretch, look)
+- `burrow`
+
+Everything except the airborne part of a hop runs on one `actionTimer`, plus `poseTimer` for idle fidgets. Sequences are data (`{ pose, seconds }`), with optional per-step burrow-hole effects (`BURROW_FX`). Starting a sequence cancels whatever was pending, so stale timers can't fire into another animation.
+
+**Secondary effects** (hover hearts, `Hearts.lua`) never touch this state.
+
+Decision after each idle wait:
+
+1. A nap (`sleepChance`, never twice in a row).
+2. Otherwise a burrow, if enabled, the cooldown has passed, the track is wide enough, and a 35 % roll succeeds.
+3. Otherwise an idle behaviour, if enabled and a 35 % roll succeeds. It's a weighted pick that's never the same twice in a row; carrot needs its own switch too.
+4. Otherwise a hop journey.
+
+`Bunny:Perform(action)` (used by `/bunny test …`) ends naps, behaviours and burrows properly first, using the waking or rising sequences, or a clean burrow cleanup.
+
+The v0.2 diagram below still describes the nap and hop flow; v0.3 splits the hop's ground phases into anticipation → push-off and contact → squash → recovery. See [ANIMATIONS.md](ANIMATIONS.md).
+
 ```text
           ┌──────── interval × U(0.5, 1.5) ────────┐
           ▼                                         │
@@ -204,6 +245,27 @@ On `Stop()` the bunny is always left in a valid resting state: on the ground, no
 **Timers:** at most two `C_Timer` handles exist at any time: `actionTimer` (state transitions) and `poseTimer` (idle fidgets). Every callback is a file-level function, so nothing allocates per frame.
 
 **Pausing:** `OnHide` calls `Stop()`, which cancels both timers, removes the `OnUpdate` script, finishes any hop in progress and puts the bunny on the ground. `OnShow` calls `Start()`. This covers `/bunny hide`, Alt+Z, cinematics, and anything else that hides `UIParent`.
+
+### Burrowing
+
+`startBurrow` → sniff → dig (hole A: mound → bigger mound → open hole) → sink (4 pre-clipped frames) → `burrowUnder`. At that point the sprite layers are hidden and the bunny moves to the destination while invisible. Then `burrowOpen` (hole B appears) → emerge (ears, head, pop) → shake (both holes close) → `burrowDone`.
+
+- **Holes:** two textures per hole on `BunnyBarFrame`, the back in `BORDER` (behind the bunny) and the front rim in `OVERLAY`, anchored `BOTTOMLEFT` at y = 0 (the ground line).
+- **Cleanup:** `burrowCleanup()` hides every hole texture, re-shows the sprite and clears the flags. It runs at the end and from `Stop()`, which also covers hiding, Alt+Z, `/bunny reset` and size changes, as well as from `Perform()`. Nothing is persisted, so `/reload` can't leave anything behind.
+
+### Hover hearts
+
+A mouse-disabled frame gets no `OnEnter`, and enabling the mouse would block the action buttons. So `Hearts.lua` checks `GetCursorPosition()` on a self-rescheduling `C_Timer`:
+
+| Situation | Check rate |
+|---|---|
+| Cursor away from the track (+24 units) | every 0.25 s |
+| Cursor near the track | every 0.05 s |
+| Hearts off, bunny hidden, UI hidden, or no `GetCursorPosition` | none at all |
+
+`Bunny:GetSpriteBox()` maps the current frame's generated bounding box (`SpriteData.lua`, mirrored when facing left) into UIParent units. It returns nothing while underground, so empty track never counts.
+
+Hearts are pooled textures (up to 10) on a click-through child frame of `BunnyBarFrame`. Each has its own `AnimationGroup` (Translation + Alpha, `SetToFinalAlpha`), and `OnFinished` hides the texture and frees the slot. Hiding the bunny stops all of them.
 
 ## Automatic placement
 
@@ -290,6 +352,8 @@ A dragged position is stored as `BOTTOM` → `UIParent BOTTOM` with an x offset 
 - UI scale and party re-sorts;
 - legacy party portraits;
 - identical results after a reload. **Placement:** Action Bar 2 on/off × XP bar on/off, reputation bar only, empty XP container, legacy XP/rep frames, all bars hidden or missing (fallback), invalid geometry (secret, erroring, nil, NaN, zero-size, too tall), custom Edit Mode positions (moved main bar, side bars off the track, bars at the top), centring without a main bar, UI scale conversion, live toggling with coalesced deferred refresh, level-cap XP bar hiding, every refresh event, no re-anchoring when nothing changed, manual override and `/bunny reset`, saved position on reload, Alt+Z, the `/bunny bars` report, hooks installed once without replacing scripts. **Live repositioning:** Action Bar 2 on/off/on with bounded settling, XP container hidden/shown, reputation replacing XP (same and separate containers), Edit Mode closing and Settings closing as triggers, a 50-change burst collapsing into one pass, continuous changes refreshing at least every `MAX_WAIT`, geometry that becomes valid or shifts after a delay (picked up by settle passes), bounded settling with permanently invalid geometry, no recursion from our own `SetPoint`, manual positions ignoring every trigger, missing frames / missing `HookScript` / failing `HookScript`, and the diagnostics in `/bunny bars`. **Naps:** sequence frame counts and timing windows, full-nap frame order and per-frame durations, no movement or `OnUpdate` during a nap, twitches only between breaths, waking only from the resting frame, `/bunny test` in every nap phase, hiding in every phase (no timers left, valid pose, nap resumes with its remaining time), settings changes mid-nap, no back-to-back naps |
+| v0.3 (Lua) | `run_tests.lua` | **Hop:** 8 phases in order and at their timings, speed scaling, air-pose thresholds, no vertical offset on the ground, frame-rate independence (30 vs 144 fps). **Behaviours:** carrot sequence with three shrinking bites at its real timing, wash/scratch/stretch/look sequences with distinct frames and no movement, look-around keeps facing, weighted pick that respects settings and never repeats, a 30-minute mixed simulation (bounds, no stray holes, sprite visible, rare `OnUpdate`, no timer pile-up). **Burrow:** both directions (opposite side, in bounds, facing, sequence, hole frames, cleanup, final position), hole alignment and layers, interruption in 6 phases × 5 ways, rarity per frequency, off switch, too-short track. **Styles:** per-style folders and SpriteData, default-fur follow vs custom kept, colour on every style and sheet, no reset when switching mid-nap or mid-behaviour, schema 2→3 migration. **Hearts:** tight hit box, mirrored, nothing underground, no hearts over empty track, hearts while asleep without waking, during hops, behaviours and digging, click-through and containment, throttled polling (4/20 per second, none when off or hidden), particle limits / animation / cleanup, `/bunny test hearts`, command validation, missing APIs, combat, panel ↔ settings ↔ reload. |
+| v0.3 (art) | `test_static.py` | Every style has every frame. Style features are present and absent from classic. Details stay untinted on every style. The zombie ear droops. Classic art is unchanged by the style hooks. Burrow frames sink and emerge progressively with nothing below the ground. SpriteData matches the frames. Lua ↔ generator parity for poses, sequences, hop timing, air poses, burrow effects and heart parameters. All v0.3 previews decode. |
 | Recolouring | `tests/test_static.py` | Layers are disjoint and complete. The default colour reproduces the original art. Only two normalised fur tones are used across every frame. Pink, sky blue and black change the fur only, and the main fur takes the exact colour. The portrait ears sprite is rooted, symmetric and has pink inner ears. |
 | Art | `tests/test_static.py` | One shared ground row, breathing moves the torso exactly 1 px and leaves the head still, twitches are subtle, consecutive frames overlap (silhouette IoU ≥ 0.7), z glyphs never touch the bunny, generator timings match the Lua sequences, the animated GIF decodes |
 | Tooling | `tests/test_static.py` | Validators catch broken inputs (negative tests). Packaging is reproducible and verification catches a wrong root, missing files and junk files. Every command is documented. |
@@ -330,3 +394,11 @@ Run these in WoW Forever and note the client build (shown on the login screen):
     The ears should be fully in front of the portrait and ring in B, with no reload. In B and C, "ears want" should equal "have", and the strata/levels should match. If the ears are still clipped in B, please send all three outputs. A growing "corrected drift" count or a later re-check fixing it points to timing. An overlapping frame above the ears' level points to a frame that isn't inside the unit frame. Repeat after changing the UI scale and after combat.
 19. **v0.2 ears:** the ears sit on top of your portrait and on party portraits. Join, leave and re-sort a party. Toggle both checkboxes. Move the player frame in Edit Mode and change the UI scale. Check that clicking and targeting the portraits still works, including in combat, and that there are no "Interface action failed because of an AddOn" or `ADDON_ACTION_BLOCKED` messages after combat, roster changes or `/reload` in combat. Record the portrait frame names with `/fstack` if no ears appear.
 20. **v0.2 upgrade:** with a v0.1 `BunnyBarDB`, check that size 32, position, speed and the other settings survive. `/bunny reset` should give Regular (64), the default colour and an updated open panel.
+
+21. **v0.3 hop:** watch several hops at speeds 0.5, 1 and 2, and at sizes 32, 64 and 128. You should see the crouch, push-off, a stretched rise, the tuck at the apex, the reach on the way down, contact, squash and recovery. Check there's no vertical jitter on the ground, that left hops are mirrored, and that it feels playful rather than slow.
+22. **v0.3 behaviours:** try `/bunny test carrot`, `wash`, `scratch`, `stretch` and `look`. Each should read clearly at size 64. The carrot should shrink over three bites, and the bunny shouldn't move while it eats. With `/bunny idle off` none appear; with `/bunny carrot off` there are no carrots.
+23. **v0.3 burrow:** run `/bunny test burrow` from the left half and from the right half of the track. The bunny should sink into the hole, never just vanish. Check the hole sits on the bar line, the second hole is on the far side, the ears come out first, and both holes disappear. Repeat while pressing Alt+Z, `/bunny hide`, `/bunny reset`, `/bunny size 48` and `/reload` mid-burrow: no hole or dirt should be left behind.
+24. **v0.3 styles:** `/bunny style devil`, then `angel`, `dragon`, `zombie` and `classic`. Check the horns, halo, wings, tails, patches and stitches during hops, naps, the carrot and the burrow. With a custom colour (`/bunny color #87CEEB`), changing style should keep it; Reset Color should give the style's default. Change style mid-nap: the bunny keeps sleeping.
+25. **v0.3 hearts:** hover the bunny while idle, hopping, eating, digging, asleep and waking. The bunny must not wake. Hovering empty parts of the track should do nothing. Check Subtle, Normal and Extra. **Click action buttons under and around the bunny while hovering**: they must still work. Hearts should disappear when the bunny is hidden.
+26. **v0.3 performance:** `/bunny stats` shows hover checks and hearts. Compare FPS with hearts on and off on an M1 MacBook Air.
+27. **v0.3 settings:** Esc → Options → AddOns → BunnyBar shows Bunny Style, Size, Behaviors and Interactions with nothing overlapping, at your normal UI scale and at a smaller one. Settings should survive `/reload`.
