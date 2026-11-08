@@ -1,0 +1,498 @@
+-- BunnyBar: the bunny frame, sprite poses and the hop/idle/sleep state machine.
+--
+-- Performance model
+--   * Waiting (idle, sleeping, between hops) is driven by C_Timer, so nothing
+--     runs per frame while the bunny sits still.
+--   * An OnUpdate script is attached only while the bunny is airborne
+--     (~0.4 s per hop) and removed on landing.
+--   * No tables or closures are created per frame; all callbacks are
+--     file-level functions.
+--   * Everything stops when the frame is hidden (OnHide), including when the
+--     whole UI is hidden with Alt+Z.
+
+local addonName, ns = ...
+local Util = ns.Util
+
+local Bunny = {}
+ns.Bunny = Bunny
+
+local C_Timer, GetTime = C_Timer, GetTime
+local random, abs, max = math.random, math.abs, math.max
+
+----------------------------------------------------------------------------
+-- Sprites
+----------------------------------------------------------------------------
+
+local TEXTURE_PATH = "Interface\\AddOns\\" .. addonName .. "\\Textures\\"
+
+-- Each sheet is a horizontal strip of 32x32 frames.
+Bunny.SHEETS = {
+    idle  = { file = TEXTURE_PATH .. "bunny-idle.tga",  count = 4 },
+    hop   = { file = TEXTURE_PATH .. "bunny-hop.tga",   count = 2 },
+    land  = { file = TEXTURE_PATH .. "bunny-land.tga",  count = 1 },
+    sleep = { file = TEXTURE_PATH .. "bunny-sleep.tga", count = 2 },
+}
+
+-- Pose name -> { sheet, frame index }
+Bunny.POSES = {
+    idle    = { "idle", 1 },
+    blink   = { "idle", 2 },
+    twitch  = { "idle", 3 },
+    breathe = { "idle", 4 },
+    prep    = { "hop", 1 },
+    jump    = { "hop", 2 },
+    land    = { "land", 1 },
+    sleep1  = { "sleep", 1 },
+    sleep2  = { "sleep", 2 },
+}
+
+local SHEETS, POSES = Bunny.SHEETS, Bunny.POSES
+
+----------------------------------------------------------------------------
+-- Timing (seconds at speed 1.0; hop duration itself comes from settings)
+----------------------------------------------------------------------------
+
+local PREP_TIME = 0.14      -- crouch before take-off
+local LAND_TIME = 0.12      -- squash after landing
+local BETWEEN_HOPS = 0.08   -- pause between hops of one journey
+local SLEEP_MIN, SLEEP_MAX = 10, 25
+local SLEEP_BREATH = 0.9    -- breathing frame toggle while asleep
+local FIDGET_MIN, FIDGET_MAX = 2.5, 6
+
+----------------------------------------------------------------------------
+-- State
+----------------------------------------------------------------------------
+
+local frame, sprite, backdrop, label
+local db
+
+local state = "stopped" -- stopped | idle | prep | air | land | between | sleep
+local x, y = nil, 0     -- sprite offset inside the track (x = left edge)
+local facing = 1        -- 1 = right, -1 = left
+local destX = 0
+local hopFromX, hopToX, hopElapsed, hopDur = 0, 0, 0, 0.4
+local lastWasNap = false
+local sleepUntil, sleepPhase = 0, 1
+
+local actionTimer, poseTimer
+local currentSheet, currentPose, currentFacing
+
+local stats = { hops = 0, journeys = 0, naps = 0, airTime = 0, since = nil }
+
+-- Forward declarations (mutually recursive state functions).
+local enterIdle, decideNext, enterSleep, sleepTick, startJourney
+local beginHop, launch, land, afterLand, idleFidget, idleRestore, onUpdate
+
+----------------------------------------------------------------------------
+-- Helpers
+----------------------------------------------------------------------------
+
+local function bounds()
+    return Util.TrackBounds(db.trackWidth, db.size)
+end
+
+local function maxStep()
+    return max(8, db.size * 1.5)
+end
+
+local function speed()
+    return db.speed
+end
+
+local function schedule(delay, fn)
+    if actionTimer then actionTimer:Cancel() end
+    actionTimer = C_Timer.NewTimer(delay, fn)
+end
+
+local function cancelTimers()
+    if actionTimer then actionTimer:Cancel(); actionTimer = nil end
+    if poseTimer then poseTimer:Cancel(); poseTimer = nil end
+end
+
+local function setPose(name)
+    if currentPose == name and currentFacing == facing then return end
+    local pose = POSES[name]
+    local sheet = SHEETS[pose[1]]
+    if currentSheet ~= sheet then
+        -- NEAREST filtering keeps the pixel art crisp at any size.
+        sprite:SetTexture(sheet.file, "CLAMP", "CLAMP", "NEAREST")
+        currentSheet = sheet
+    end
+    local left = (pose[2] - 1) / sheet.count
+    local right = pose[2] / sheet.count
+    if facing < 0 then left, right = right, left end -- mirror horizontally
+    sprite:SetTexCoord(left, right, 0, 1)
+    currentPose, currentFacing = name, facing
+end
+
+local function place()
+    sprite:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", Util.Round(x), Util.Round(y))
+end
+
+----------------------------------------------------------------------------
+-- State machine
+----------------------------------------------------------------------------
+
+function idleFidget()
+    poseTimer = nil
+    if state ~= "idle" then return end
+    local r, pose, duration = random(), "blink", 0.14
+    if r < 0.2 then
+        pose, duration = "twitch", 0.3
+    elseif r < 0.35 then
+        pose, duration = "breathe", 0.6
+    end
+    setPose(pose)
+    poseTimer = C_Timer.NewTimer(duration, idleRestore)
+end
+
+function idleRestore()
+    poseTimer = nil
+    if state ~= "idle" then return end
+    setPose("idle")
+    poseTimer = C_Timer.NewTimer(Util.RandomRange(FIDGET_MIN, FIDGET_MAX), idleFidget)
+end
+
+function enterIdle()
+    state = "idle"
+    y = 0
+    place()
+    setPose("idle")
+    if poseTimer then poseTimer:Cancel() end
+    poseTimer = C_Timer.NewTimer(Util.RandomRange(1.5, FIDGET_MAX), idleFidget)
+    local interval = db.interval
+    schedule(Util.RandomRange(interval * 0.5, interval * 1.5), decideNext)
+end
+
+function decideNext()
+    actionTimer = nil
+    if not lastWasNap and random() < db.sleepChance then
+        lastWasNap = true
+        enterSleep()
+        return
+    end
+    lastWasNap = false
+    local minX, maxX = bounds()
+    startJourney(Util.ChooseDestination(x, minX, maxX, db.size, random))
+end
+
+function enterSleep()
+    state = "sleep"
+    stats.naps = stats.naps + 1
+    if poseTimer then poseTimer:Cancel(); poseTimer = nil end
+    sleepUntil = GetTime() + Util.RandomRange(SLEEP_MIN, SLEEP_MAX)
+    sleepPhase = 1
+    setPose("sleep1")
+    schedule(SLEEP_BREATH, sleepTick)
+end
+
+function sleepTick()
+    actionTimer = nil
+    if GetTime() >= sleepUntil then
+        enterIdle()
+        return
+    end
+    sleepPhase = 3 - sleepPhase
+    setPose(sleepPhase == 1 and "sleep1" or "sleep2")
+    schedule(SLEEP_BREATH, sleepTick)
+end
+
+function startJourney(target)
+    destX = target
+    if target ~= x then facing = (target > x) and 1 or -1 end
+    stats.journeys = stats.journeys + 1
+    beginHop()
+end
+
+function beginHop()
+    if poseTimer then poseTimer:Cancel(); poseTimer = nil end
+    state = "prep"
+    setPose("prep")
+    schedule(PREP_TIME / speed(), launch)
+end
+
+function launch()
+    actionTimer = nil
+    state = "air"
+    hopFromX = x
+    hopToX = Util.NextHopX(x, destX, maxStep())
+    hopElapsed = 0
+    hopDur = db.hopDuration / speed()
+    stats.hops = stats.hops + 1
+    setPose("jump")
+    frame:SetScript("OnUpdate", onUpdate)
+end
+
+function onUpdate(_, elapsed)
+    hopElapsed = hopElapsed + elapsed
+    local t = hopElapsed / hopDur
+    if t >= 1 then t = 1 end
+    -- Constant horizontal speed + parabolic height = a natural ballistic arc.
+    x = hopFromX + (hopToX - hopFromX) * t
+    y = Util.HopArc(t, db.hopHeight)
+    place()
+    if t >= 1 then
+        frame:SetScript("OnUpdate", nil)
+        stats.airTime = stats.airTime + hopDur
+        land()
+    end
+end
+
+function land()
+    state = "land"
+    x, y = hopToX, 0
+    place()
+    setPose("land")
+    schedule(LAND_TIME / speed(), afterLand)
+end
+
+function afterLand()
+    actionTimer = nil
+    if abs(destX - x) > 0.5 then
+        state = "between"
+        setPose("idle")
+        schedule(BETWEEN_HOPS / speed(), beginHop)
+    else
+        enterIdle()
+    end
+end
+
+----------------------------------------------------------------------------
+-- Positioning
+----------------------------------------------------------------------------
+
+-- Frames checked when looking for the default action bar, primary first.
+-- Only geometry is *read*; nothing is hooked or modified, so this is safe in
+-- and out of combat. Names differ between client generations, hence the list.
+Bunny.BAR_NAMES = { "MainActionBar", "MainMenuBar", "MultiBarBottomLeft", "MultiBarBottomRight" }
+Bunny.FALLBACK_Y = 100 -- UI units above the bottom of the screen
+local GAP = 2
+
+local function usable(v)
+    -- Midnight-era clients can return "secret" values that cannot be compared
+    -- or used in arithmetic by addons. Treat them as unavailable.
+    if issecretvalue and issecretvalue(v) then return false end
+    return type(v) == "number" and v == v
+end
+
+local function readBar(bar)
+    return bar:IsVisible(), bar:GetTop(), (bar:GetCenter()), bar:GetEffectiveScale()
+end
+
+-- Returns x offset (from screen centre), y offset (from screen bottom) and
+-- whether an action bar was actually found.
+function Bunny.DetectDefaultOffset()
+    local parent = UIParent
+    local parentScale = parent:GetEffectiveScale()
+    local screenHeight = parent:GetHeight()
+    local bestTop, centerX
+    local names = Bunny.BAR_NAMES
+    for i = 1, #names do
+        local bar = _G[names[i]]
+        if type(bar) == "table" and bar.GetTop then
+            local ok, visible, top, cx, scale = pcall(readBar, bar)
+            if ok and not (issecretvalue and issecretvalue(visible)) and visible == true
+                and usable(top) and usable(cx) and usable(scale) and scale > 0 then
+                top = top * scale / parentScale
+                cx = cx * scale / parentScale
+                -- Ignore bars that Edit Mode moved to the upper part of the screen.
+                if top > 0 and top < screenHeight * 0.45 then
+                    if not bestTop or top > bestTop then bestTop = top end
+                    if not centerX then centerX = cx end
+                end
+            end
+        end
+    end
+    if not bestTop then return 0, Bunny.FALLBACK_Y, false end
+    return Util.Round(centerX - parent:GetWidth() / 2), Util.Round(bestTop + GAP), true
+end
+
+function Bunny:ApplyPosition()
+    if not frame then return end
+    db = ns.db
+    frame:ClearAllPoints()
+    if db.point then
+        frame:SetPoint(db.point, UIParent, db.relativePoint, db.x, db.y)
+    else
+        local ox, oy = Bunny.DetectDefaultOffset()
+        frame:SetPoint("BOTTOM", UIParent, "BOTTOM", ox, oy)
+    end
+end
+
+function Bunny:IsAutoPositioned()
+    return ns.db.point == nil
+end
+
+-- Store the dragged position relative to the bottom-centre of the screen, so
+-- it survives resolution and UI-scale changes sensibly.
+local function savePosition()
+    local left, bottom, width = frame:GetLeft(), frame:GetBottom(), frame:GetWidth()
+    if not (left and bottom and width) then return end
+    db.point, db.relativePoint = "BOTTOM", "BOTTOM"
+    db.x = Util.Round(left + width / 2 - UIParent:GetWidth() / 2)
+    db.y = Util.Round(bottom)
+    frame:ClearAllPoints()
+    frame:SetPoint(db.point, UIParent, db.relativePoint, db.x, db.y)
+end
+
+----------------------------------------------------------------------------
+-- Public API
+----------------------------------------------------------------------------
+
+local function onDragStart(self)
+    if not db.locked then self:StartMoving() end
+end
+
+local function onDragStop(self)
+    self:StopMovingOrSizing()
+    if self.SetUserPlaced then self:SetUserPlaced(false) end -- we persist it ourselves
+    savePosition()
+end
+
+local function onShow() Bunny:Start() end
+local function onHide() Bunny:Stop() end
+
+function Bunny:Create()
+    if frame then return frame end
+    db = ns.db
+
+    frame = CreateFrame("Frame", "BunnyBarFrame", UIParent)
+    frame:Hide()
+    frame:SetFrameStrata("LOW") -- below action buttons (MEDIUM) if they ever overlap
+    frame:SetClampedToScreen(true)
+    frame:SetMovable(true)
+    frame:EnableMouse(false)    -- click-through while locked
+    frame:RegisterForDrag("LeftButton")
+
+    backdrop = frame:CreateTexture(nil, "BACKGROUND")
+    backdrop:SetAllPoints(frame)
+    backdrop:SetColorTexture(0.45, 0.65, 1.0, 0.25)
+    backdrop:Hide()
+
+    label = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    label:SetPoint("BOTTOM", frame, "TOP", 0, 2)
+    label:SetText("BunnyBar: drag to move, then type /bunny lock")
+    label:Hide()
+
+    sprite = frame:CreateTexture(nil, "ARTWORK")
+
+    frame:SetScript("OnShow", onShow)
+    frame:SetScript("OnHide", onHide)
+    frame:SetScript("OnDragStart", onDragStart)
+    frame:SetScript("OnDragStop", onDragStop)
+
+    self:ApplySettings()
+    return frame
+end
+
+-- Re-apply size/track settings. Restarts the behaviour loop if it was running.
+function Bunny:ApplySettings(recenter)
+    if not frame then return end
+    db = ns.db
+    local wasRunning = state ~= "stopped"
+    self:Stop()
+    frame:SetSize(db.trackWidth, db.size + db.hopHeight)
+    sprite:SetSize(db.size, db.size)
+    local minX, maxX = bounds()
+    if x == nil or recenter then x = (minX + maxX) / 2 end
+    x = Util.Clamp(x, minX, maxX)
+    destX = x
+    place()
+    setPose("idle")
+    if wasRunning or frame:IsVisible() then self:Start() end
+end
+
+function Bunny:Start()
+    if not frame or state ~= "stopped" or not frame:IsVisible() then return end
+    db = ns.db
+    stats.since = stats.since or GetTime()
+    local minX, maxX = bounds()
+    x = Util.Clamp(x or (minX + maxX) / 2, minX, maxX)
+    enterIdle()
+end
+
+function Bunny:Stop()
+    cancelTimers()
+    if frame then frame:SetScript("OnUpdate", nil) end
+    if state == "air" then x = hopToX end -- finish the hop (invisible: we're hidden)
+    y = 0
+    state = "stopped"
+    if frame and x then
+        place()
+        setPose("idle")
+    end
+end
+
+function Bunny:SetShown(shown)
+    if frame then frame:SetShown(shown and true or false) end
+end
+
+function Bunny:SetLocked(locked)
+    if not frame then return end
+    if locked then frame:StopMovingOrSizing() end
+    frame:EnableMouse(not locked)
+    backdrop:SetShown(not locked)
+    label:SetShown(not locked)
+end
+
+-- Start a hop journey right now (used by /bunny test). Wakes a sleeping bunny.
+function Bunny:TestHop()
+    if not frame or not frame:IsVisible() then return false end
+    if state == "prep" or state == "air" or state == "land" or state == "between" then
+        return true -- already hopping
+    end
+    if state == "stopped" then self:Start() end
+    cancelTimers()
+    lastWasNap = false
+    local minX, maxX = bounds()
+    startJourney(Util.ChooseDestination(x, minX, maxX, db.size, random))
+    return true
+end
+
+-- Snapshot used by /bunny stats and the test-suite.
+function Bunny:GetDebugState()
+    return {
+        state = state, x = x, y = y, facing = facing, destX = destX,
+        pose = currentPose, onUpdate = frame and frame:GetScript("OnUpdate") ~= nil or false,
+        hops = stats.hops, journeys = stats.journeys, naps = stats.naps,
+        airTime = stats.airTime, since = stats.since,
+    }
+end
+
+local function getMemoryKB()
+    local update = (C_AddOns and C_AddOns.UpdateAddOnMemoryUsage) or UpdateAddOnMemoryUsage
+    local get = (C_AddOns and C_AddOns.GetAddOnMemoryUsage) or GetAddOnMemoryUsage
+    if not (update and get) then return nil end
+    local ok, kb = pcall(function() update(); return get(addonName) end)
+    if ok and usable(kb) then return kb end
+    return nil
+end
+
+local function getRecentCpuMs()
+    local profiler = C_AddOnProfiler
+    local metric = Enum and Enum.AddOnProfilerMetric and Enum.AddOnProfilerMetric.RecentAverageTime
+    if not (profiler and profiler.GetAddOnMetric and metric) then return nil end
+    local ok, ms = pcall(profiler.GetAddOnMetric, addonName, metric)
+    if ok and usable(ms) then return ms end
+    return nil
+end
+
+function Bunny:GetStats()
+    local s = self:GetDebugState()
+    local lines = {}
+    lines[#lines + 1] = ("state: %s | shown: %s | locked: %s | position: %s"):format(
+        s.state, tostring(ns.db.shown), tostring(ns.db.locked),
+        self:IsAutoPositioned() and "auto (above action bar)" or "custom")
+    lines[#lines + 1] = ("hops: %d in %d journeys | naps: %d"):format(s.hops, s.journeys, s.naps)
+    if s.since then
+        local session = max(GetTime() - s.since, 0.001)
+        lines[#lines + 1] = ("per-frame updates active %.2f%% of the time (only while airborne)"):format(
+            100 * s.airTime / session)
+    end
+    local kb = getMemoryKB()
+    lines[#lines + 1] = kb and ("memory: %.1f KB"):format(kb) or "memory: not available on this client"
+    local ms = getRecentCpuMs()
+    lines[#lines + 1] = ms and ("CPU (recent average): %.4f ms per frame"):format(ms)
+        or "CPU: per-addon profiler not available on this client"
+    return lines
+end

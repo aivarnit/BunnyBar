@@ -1,0 +1,90 @@
+name: Validate & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate and package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Lua 5.1 interpreters
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.1 luajit
+
+      - name: Static validation (TOC, Lua 5.1 syntax, textures, offline tests)
+        run: python3 scripts/validate.py -v
+
+      - name: Offline Lua test-suite on reference Lua 5.1
+        run: lua5.1 tests/lua/run_tests.lua
+
+      - name: Tooling unit tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Build and verify ZIP
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            python3 scripts/package.py --tag "$GITHUB_REF_NAME"
+          else
+            python3 scripts/package.py
+          fi
+
+      - name: Re-verify archive contents independently
+        run: |
+          zip=$(ls dist/BunnyBar-*.zip)
+          unzip -l "$zip"
+          test "$(unzip -Z1 "$zip" | cut -d/ -f1 | sort -u)" = "BunnyBar"
+          for f in BunnyBar.toc Util.lua Config.lua Animation.lua Core.lua \
+                   Textures/bunny-idle.tga Textures/bunny-hop.tga \
+                   Textures/bunny-land.tga Textures/bunny-sleep.tga; do
+            unzip -Z1 "$zip" | grep -qx "BunnyBar/$f" || { echo "missing BunnyBar/$f"; exit 1; }
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BunnyBar-zip
+          path: dist/BunnyBar-*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: BunnyBar-zip
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<EOF
+          BunnyBar ${TAG} for WoW Forever (\`## Interface: 16001\`).
+
+          **Install:** extract the ZIP into \`World of Warcraft/_forever_/Interface/AddOns/\` so that \`AddOns/BunnyBar/BunnyBar.toc\` exists, then fully restart the game.
+          See [INSTALLATION.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/INSTALLATION.md) for macOS and Windows details.
+
+          Validated by static checks and offline tests in CI. See the README for in-game verification status.
+          EOF
+          gh release create "$TAG" dist/BunnyBar-*.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "BunnyBar $TAG" \
+            --notes-file notes.md

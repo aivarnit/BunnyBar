@@ -1,0 +1,14 @@
+## Interface: 16001
+## Title: BunnyBar
+## Notes: A tiny pixel-art bunny that hops above your action bar.
+## Author: Anthony Varnit
+## Version: 0.1.0
+## SavedVariables: BunnyBarDB
+## IconTexture: Interface\AddOns\BunnyBar\Textures\bunny-land.tga
+## X-License: MIT
+## X-Website: https://github.com/aivarnit/BunnyBar
+
+Util.lua
+Config.lua
+Animation.lua
+Core.lua
