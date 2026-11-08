@@ -278,7 +278,7 @@ local function update(target)
         return false
     end
 
-    -- Position (unchanged from v0.2.0).
+    -- Position (unchanged by the layering fixes).
     local w = (r - l) * Ears.WIDTH_RATIO
     local h = w / 2
     local cx, bottom = (l + r) / 2, t - h * Ears.OVERLAP

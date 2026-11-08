@@ -2,7 +2,7 @@
 ## Title: BunnyBar
 ## Notes: A tiny pixel-art bunny that hops above your action bar.
 ## Author: Anthony Varnit
-## Version: 0.1.0
+## Version: 0.2.0
 ## SavedVariables: BunnyBarDB
 ## IconTexture: Interface\AddOns\BunnyBar\Textures\bunny-icon.tga
 ## X-License: MIT

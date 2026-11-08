@@ -6,7 +6,7 @@ it straight into their `Interface/AddOns` directory.
 
 Usage:
   python3 scripts/package.py                    # build dist/BunnyBar-<version>.zip
-  python3 scripts/package.py --tag v0.1.0       # also require tag == TOC version
+  python3 scripts/package.py --tag v0.2.0       # also require tag == TOC version
   python3 scripts/package.py --verify FILE.zip  # verify an existing archive
 
 The build is reproducible: entries are sorted and carry a fixed timestamp.
@@ -97,7 +97,7 @@ def verify(path: Path) -> list[str]:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Build/verify the BunnyBar ZIP")
     ap.add_argument("--verify", type=Path, help="verify an existing archive instead of building")
-    ap.add_argument("--tag", help="git tag (e.g. v0.1.0) that must match the TOC version")
+    ap.add_argument("--tag", help="git tag (e.g. v0.2.0) that must match the TOC version")
     ap.add_argument("--out", type=Path, default=DIST, help="output directory (default: dist/)")
     args = ap.parse_args(argv)
 

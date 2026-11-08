@@ -12,8 +12,8 @@ Research was done on 7 November 2026, three days after WoW Forever launched on 4
 | Lua | Modified Lua 5.1: no `goto`, `//`, bitwise operators or `_ENV`. No `require`, `io` or `os`. The TOC is the module loader. | Standard for all WoW clients |
 | AddOns folder | `World of Warcraft/_forever_/Interface/AddOns` (beta: `_classic_beta_`) | Add-on managers and guides. Not stated in any Blizzard post that was found. |
 | TOC suffixes | `_Forever.toc` / `_Camelot.toc` reportedly supported for multi-client addons | Single source. Not used by BunnyBar. |
-| Settings API | Modern `Settings.RegisterCanvasLayoutCategory` / `RegisterAddOnCategory` / `OpenToCategory` expected (Mainline API). | **Unverified for v0.2.** Feature-detected with fallbacks. |
-| Unit frame / portrait names | Modern `PlayerFrame.PlayerFrameContainer.PlayerPortrait`, `PartyFrame.MemberFrameN.Portrait` expected. | **Unverified.** Legacy names also tried. |
+| Settings API | Modern `Settings.RegisterCanvasLayoutCategory` / `RegisterAddOnCategory` / `OpenToCategory` (Mainline API). | Works in game (v0.2.0, maintainer test). Still feature-detected, with fallbacks. |
+| Unit frame / portrait names | Modern `PlayerFrame.PlayerFrameContainer.PlayerPortrait`, `PartyFrame.MemberFrameN.Portrait`; legacy names also tried. | Portrait ears work in game (v0.2.0, maintainer test). Which candidate name resolves on Forever wasn't recorded; `/bunny ears debug` shows it. |
 | Bottom bar frame names | Unknown for Forever. See [Frame names to verify](#frame-names-to-verify-in-game). | **Unverified.** Every name is optional. |
 | SavedVariables | Standard. Ready at `ADDON_LOADED`. An early-beta restore bug was reportedly fixed in build 70009. | Guides |
 
@@ -104,7 +104,7 @@ Combat and taint safety:
 
 **Layering.** WoW draws frames by strata, then by frame level. Texture draw layers (`BACKGROUND`…`OVERLAY`) only order regions *within one frame*, so the ears' own draw layer can't lift them over another frame.
 
-v0.2.0 copied the unit frame's strata and used its level + 10. That fails because:
+The first v0.2 implementation copied the unit frame's strata and used its level + 10. That fails because:
 
 - the portrait texture is drawn by a nested frame (`PlayerFrame.PlayerFrameContainer`), and the ring and icons by other descendants. These carry their own level offsets and sometimes their own strata;
 - Edit Mode raises a frame when you drag it, which re-levels its whole subtree, so "unit frame + 10" could end up below the portrait's frame and part of the ears was hidden.

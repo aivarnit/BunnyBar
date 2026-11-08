@@ -50,7 +50,7 @@ C:\Program Files (x86)\World of Warcraft\_forever_\Interface\AddOns\
 1. Open File Explorer and go to `…\World of Warcraft\_forever_\`.
 2. If there's no `Interface` folder, or no `AddOns` folder inside it, create them. The names are case-sensitive in some tools, so use exactly `Interface` and `AddOns`.
 3. Right-click the downloaded ZIP and choose **Extract All…**, then extract into the `AddOns` folder.
-4. Check that you have `…\Interface\AddOns\BunnyBar\BunnyBar.toc`. If you see `AddOns\BunnyBar-0.1.0\BunnyBar\…`, move the inner `BunnyBar` folder up one level.
+4. Check that you have `…\Interface\AddOns\BunnyBar\BunnyBar.toc`. If you see `AddOns\BunnyBar-0.2.0\BunnyBar\…`, move the inner `BunnyBar` folder up one level.
 
 ### macOS (Apple Silicon or Intel)
 

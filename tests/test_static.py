@@ -472,6 +472,19 @@ class PackageTests(unittest.TestCase):
 
 
 class DocsTests(unittest.TestCase):
+    def test_release_notes_exist_for_the_current_version(self):
+        version = package.toc_meta()[0]["Version"]
+        notes = ROOT / "docs" / "releases" / f"v{version}.md"
+        self.assertTrue(notes.exists(), f"add {notes.relative_to(ROOT)} before tagging")
+        text = notes.read_text()
+        self.assertIn(f"v{version}", text)
+        self.assertIn(f"BunnyBar-{version}.zip", text)
+        self.assertIn("WoW Forever", text.replace("World of Warcraft: Forever", "WoW Forever"))
+        self.assertIn("_forever_/Interface/AddOns", text)
+        self.assertIn("16001", text)
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn(f"Current version: {version}", readme)
+
     def test_every_slash_command_is_documented(self):
         config = (validate.ADDON_DIR / "Config.lua").read_text()
         commands = (ROOT / "docs" / "COMMANDS.md").read_text()

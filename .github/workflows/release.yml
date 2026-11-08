@@ -33,6 +33,10 @@ jobs:
       - name: Tooling unit tests
         run: python3 -m unittest discover -s tests -v
 
+      - name: Release notes exist for the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: test -s "docs/releases/${GITHUB_REF_NAME}.md" || { echo "missing docs/releases/${GITHUB_REF_NAME}.md"; exit 1; }
+
       - name: Build and verify ZIP
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -41,23 +45,34 @@ jobs:
             python3 scripts/package.py
           fi
 
+      - name: SHA-256 checksum
+        working-directory: dist
+        run: |
+          zip=$(ls BunnyBar-*.zip)
+          sha256sum "$zip" > "$zip.sha256"
+          cat "$zip.sha256"
+
       - name: Re-verify archive contents independently
         run: |
           zip=$(ls dist/BunnyBar-*.zip)
           unzip -l "$zip"
-          test "$(unzip -Z1 "$zip" | cut -d/ -f1 | sort -u)" = "BunnyBar"
+          # Capture listings first: `unzip | grep -q` can SIGPIPE under pipefail.
+          list=$(unzip -Z1 "$zip")
+          test "$(cut -d/ -f1 <<<"$list" | sort -u)" = "BunnyBar"
           for f in BunnyBar.toc Util.lua Config.lua Appearance.lua Placement.lua \
                    Animation.lua Ears.lua Options.lua Core.lua Textures/bunny-ears.tga \
                    Textures/bunny-idle.tga Textures/bunny-hop.tga \
                    Textures/bunny-land.tga Textures/bunny-sleep.tga \
-                   Textures/bunny-sleepy.tga Textures/bunny-wake.tga; do
-            unzip -Z1 "$zip" | grep -qx "BunnyBar/$f" || { echo "missing BunnyBar/$f"; exit 1; }
+                   Textures/bunny-sleepy.tga Textures/bunny-wake.tga Textures/bunny-icon.tga; do
+            grep -qx "BunnyBar/$f" <<<"$list" || { echo "missing BunnyBar/$f"; exit 1; }
           done
 
       - uses: actions/upload-artifact@v4
         with:
           name: BunnyBar-zip
-          path: dist/BunnyBar-*.zip
+          path: |
+            dist/BunnyBar-*.zip
+            dist/BunnyBar-*.zip.sha256
           if-no-files-found: error
 
   release:
@@ -68,25 +83,43 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4 # release notes from the tagged commit
+
       - uses: actions/download-artifact@v4
         with:
           name: BunnyBar-zip
           path: dist
+
+      - name: Verify the artifact checksum
+        working-directory: dist
+        run: sha256sum -c BunnyBar-*.zip.sha256
 
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
-          cat > notes.md <<EOF
-          BunnyBar ${TAG} for WoW Forever (\`## Interface: 16001\`).
-
-          **Install:** extract the ZIP into \`World of Warcraft/_forever_/Interface/AddOns/\` so that \`AddOns/BunnyBar/BunnyBar.toc\` exists, then fully restart the game.
-          See [INSTALLATION.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/INSTALLATION.md) for macOS and Windows details.
-
-          Validated by static checks and offline tests in CI. See the README for in-game verification status.
-          EOF
-          gh release create "$TAG" dist/BunnyBar-*.zip \
+          gh release create "$TAG" dist/BunnyBar-*.zip dist/BunnyBar-*.zip.sha256 \
             --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
             --title "BunnyBar $TAG" \
-            --notes-file notes.md
+            --notes-file "docs/releases/$TAG.md"
+
+      - name: Verify the published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir published
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir published
+          cd published
+          ls -l
+          sha256sum -c BunnyBar-*.zip.sha256
+          zip=$(ls BunnyBar-*.zip)
+          test "$zip" = "BunnyBar-${TAG#v}.zip"
+          list=$(unzip -Z1 "$zip")
+          test "$(cut -d/ -f1 <<<"$list" | sort -u)" = "BunnyBar"
+          toc=$(unzip -p "$zip" BunnyBar/BunnyBar.toc)
+          grep -qx "## Version: ${TAG#v}" <<<"$toc"
+          grep -qx "## Interface: 16001" <<<"$toc"
+          echo "published $zip verified"
