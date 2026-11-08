@@ -12,7 +12,7 @@ All commands start with `/bunny`, or the alias `/bunnybar`. Command words aren't
 | `/bunny lock` | Lock the position. The frame becomes click-through again. |
 | `/bunny unlock` | Show a translucent blue track that you can drag with the left mouse button. |
 | `/bunny reset` | Restore **all** settings to their defaults, return to automatic placement above the action bar, and re-centre the bunny. |
-| `/bunny test` | Hop now. Wakes the bunny if it's asleep. Does nothing if it's already hopping. |
+| `/bunny test` | Hop now. A napping bunny gets up first: from deep sleep it plays the wake-up (about 0.9 s), and if it's still lying down it rises back up. Does nothing if it's already hopping. |
 | `/bunny stats` (alias `status`) | Print state, hop/nap counters, the share of time per-frame updates were active, memory use, and per-addon CPU time (if the client exposes it). |
 
 ## Numeric settings

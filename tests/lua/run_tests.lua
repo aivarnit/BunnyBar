@@ -343,23 +343,280 @@ test("hidden setting persists across reload", function()
     eq(mock.pendingTimers() <= 1, true, "only the one-shot layout timer")
 end)
 
-test("/bunny test triggers a hop immediately and wakes a sleeper", function()
+test("/bunny test triggers a hop immediately from idle", function()
     local ns2 = boot(nil)
     slash("test")
     eq(ns2.Bunny:GetDebugState().state, "prep")
     mock.advance(0.2)
     eq(ns2.Bunny:GetDebugState().state, "air")
-    -- Put the bunny to sleep, then wake it with /bunny test.
-    mock.advance(5)
-    ns2.Bunny:Stop(); ns2.Bunny:Start()
-    BunnyBarDB.sleepChance = 1
-    for _ = 1, 600 do
-        if ns2.Bunny:GetDebugState().state == "sleep" then break end
-        mock.advance(0.1)
+end)
+
+----------------------------------------------------------------------------
+-- Sleep animation
+----------------------------------------------------------------------------
+
+io.write("Sleep animation\n")
+
+local STEP = 1 / 120
+
+-- Boot with naps forced and advance until the nap starts (state "drowsy").
+local function bootNap(seed)
+    math.randomseed(seed or 11)
+    local ns2 = boot({ sleepChance = 1 })
+    mock.advance(1.05) -- one-shot post-login layout timer
+    for _ = 1, 2000 do
+        if ns2.Bunny:GetDebugState().state == "drowsy" then return ns2 end
+        mock.advance(STEP)
     end
-    eq(ns2.Bunny:GetDebugState().state, "sleep")
+    error("nap never started")
+end
+
+-- Advance until `pred(state)` is true; returns elapsed seconds.
+local function advanceUntil(ns2, pred, limit)
+    local t0 = mock.now
+    while not pred(ns2.Bunny:GetDebugState()) do
+        if mock.now - t0 > (limit or 60) then error("condition not reached") end
+        mock.advance(STEP)
+    end
+    return mock.now - t0
+end
+
+-- Record (pose, start time) for every pose change until `pred` holds.
+local function recordPoses(ns2, pred, limit)
+    local log = { { pose = ns2.Bunny:GetDebugState().pose, at = mock.now } }
+    local t0 = mock.now
+    while true do
+        local s = ns2.Bunny:GetDebugState()
+        if s.pose ~= log[#log].pose then log[#log + 1] = { pose = s.pose, at = mock.now } end
+        if pred(s) then break end
+        if mock.now - t0 > (limit or 60) then error("recording limit reached") end
+        mock.advance(STEP)
+    end
+    for i = 1, #log - 1 do log[i].dur = log[i + 1].at - log[i].at end
+    return log
+end
+
+local function seqTotal(seq)
+    local t = 0
+    for i = 1, #seq do t = t + seq[i][2] end
+    return t
+end
+
+test("sequence definitions: frame counts, order and timing windows", function()
+    local B = ns.Bunny
+    local S = B.SEQUENCES
+    local function names(seq)
+        local out = {}
+        for i = 1, #seq do out[i] = seq[i][1] end
+        return table.concat(out, ",")
+    end
+    eq(names(S.drowsy), "drowsy1,drowsy2,drowsy3")
+    eq(names(S.liedown), "liedown1,liedown2,liedown3,liedown4")
+    eq(names(S.breathe), "sleep1,sleep2,sleep3,sleep4")
+    eq(names(S.wake), "wake1,wake2,wake3,wake4")
+    eq(names(S.rise), "liedown4,liedown3,liedown2,liedown1")
+    local function within(v, lo, hi, what)
+        truthy(v >= lo - 1e-9 and v <= hi + 1e-9, ("%s total %.2fs not in %.1f-%.1f"):format(what, v, lo, hi))
+    end
+    within(seqTotal(S.drowsy), 0.5, 0.8, "getting sleepy")
+    within(seqTotal(S.liedown), 0.5, 0.8, "lying down")
+    within(seqTotal(S.breathe), 2.0, 3.0, "breathing loop")
+    within(seqTotal(S.wake), 0.6, 1.0, "waking up")
+    -- Every pose maps to a real frame inside its sheet.
+    for name, pose in pairs(B.POSES) do
+        local sheet = B.SHEETS[pose[1]]
+        truthy(sheet, "sheet for " .. name)
+        truthy(pose[2] >= 1 and pose[2] <= sheet.count, "frame index for " .. name)
+    end
+    for name, sheet in pairs(B.SHEETS) do
+        truthy(sheet.slots >= sheet.count, name .. " slots >= count")
+        local p = sheet.slots
+        while p > 1 and p % 2 == 0 do p = p / 2 end
+        eq(p, 1, name .. " slots is a power of two")
+    end
+end)
+
+test("texture coordinates address padded sheets by slot", function()
+    local ns2 = bootNap(5)
+    local sprite
+    for _, c in ipairs(BunnyBarFrame._children) do if c._texture then sprite = c end end
+    advanceUntil(ns2, function(s) return s.pose == "liedown4" end)
+    truthy(sprite._texture:find("bunny%-sleepy%.tga"), sprite._texture)
+    local l, r = sprite:GetTexCoord()
+    if l > r then l, r = r, l end
+    near(l, 6 / 8); near(r, 7 / 8)
+end)
+
+test("a full nap plays every phase in order with the specified timing", function()
+    local ns2 = bootNap(21)
+    local x0 = ns2.Bunny:GetDebugState().x
+    local onUpdateSeen = false
+    local napStart = mock.now
+    local log = recordPoses(ns2, function(s)
+        if s.onUpdate then onUpdateSeen = true end
+        truthy(s.x == x0 and s.y == 0, "bunny must not move while napping")
+        return s.state == "idle"
+    end, 60)
+    local napLength = mock.now - napStart
+    eq(onUpdateSeen, false, "no per-frame updates during a nap")
+
+    local poses = {}
+    for i = 1, #log do poses[i] = log[i].pose end
+    local seqStr = table.concat(poses, " ")
+    -- Expected grammar: drowsy x3, liedown x4, (breath cycle [twitch])+, wake x4, idle
+    local i = 1
+    local function expect(name)
+        eq(poses[i], name, "frame " .. i .. " in: " .. seqStr)
+        i = i + 1
+    end
+    for _, n in ipairs({ "drowsy1", "drowsy2", "drowsy3", "liedown1", "liedown2", "liedown3", "liedown4" }) do
+        expect(n)
+    end
+    local cycles = 0
+    while poses[i] == "sleep1" do
+        for _, n in ipairs({ "sleep1", "sleep2", "sleep3", "sleep4" }) do expect(n) end
+        cycles = cycles + 1
+        if poses[i] == "sleepEar" or poses[i] == "sleepNose" then i = i + 1 end
+    end
+    for _, n in ipairs({ "wake1", "wake2", "wake3", "wake4", "idle" }) do expect(n) end
+    eq(poses[i], nil, "nothing after idle")
+    truthy(cycles >= 3, "breathing cycles: " .. cycles)
+
+    -- Durations match the sequence tables (to within one simulation step).
+    local want = {}
+    for _, seqName in ipairs({ "drowsy", "liedown", "breathe", "wake" }) do
+        for _, step in ipairs(ns2.Bunny.SEQUENCES[seqName]) do want[step[1]] = step[2] end
+    end
+    want.sleepEar, want.sleepNose = 0.3, 0.3
+    for k = 1, #log - 1 do
+        local w = want[log[k].pose]
+        -- Timers fire on frame boundaries (as in the client), so allow a
+        -- little over two frames of quantisation.
+        if w then near(log[k].dur, w, STEP * 2.5, log[k].pose .. " duration") end
+    end
+    -- Whole nap: 0.74 s drowsy + 0.64 s lying + 10-25 s asleep (rounded up
+    -- to whole breaths, plus twitches) + 0.88 s waking.
+    truthy(napLength >= 0.74 + 0.64 + 10 + 0.88 - 0.05, "nap too short: " .. napLength)
+    truthy(napLength <= 0.74 + 0.64 + 25 + 2.4 + 0.3 + 0.88 + 0.05, "nap too long: " .. napLength)
+end)
+
+test("twitches happen occasionally, only between breaths", function()
+    math.randomseed(99)
+    local ns2 = boot({ sleepChance = 1, interval = 2 })
+    local prevPose, seen = nil, { sleepEar = 0, sleepNose = 0 }
+    local afterTwitch
+    mock.advance(900, STEP * 4, function()
+        local p = ns2.Bunny:GetDebugState().pose
+        if p ~= prevPose then
+            if p == "sleepEar" or p == "sleepNose" then
+                eq(prevPose, "sleep4", "twitch follows the exhale frame")
+                seen[p] = seen[p] + 1
+                afterTwitch = true
+            elseif afterTwitch then
+                truthy(p == "sleep1", "breathing resumes after a twitch, got " .. tostring(p))
+                afterTwitch = false
+            end
+            prevPose = p
+        end
+    end)
+    truthy(seen.sleepEar >= 2 and seen.sleepNose >= 2,
+        ("ear %d, nose %d"):format(seen.sleepEar, seen.sleepNose))
+end)
+
+test("waking only starts from the resting (exhaled) frame", function()
+    for seed = 1, 5 do
+        local ns2 = bootNap(seed)
+        local log = recordPoses(ns2, function(s) return s.pose == "wake1" end, 40)
+        local before = log[#log - 1].pose
+        truthy(before == "sleep4" or before == "sleepEar" or before == "sleepNose",
+            "frame before waking: " .. before)
+    end
+end)
+
+test("/bunny test while getting sleepy hops straight away", function()
+    local ns2 = bootNap(3)
     slash("test")
-    eq(ns2.Bunny:GetDebugState().state, "prep", "woke up and hopped")
+    eq(ns2.Bunny:GetDebugState().state, "prep")
+end)
+
+test("/bunny test while lying down rises in reverse, then hops", function()
+    local ns2 = bootNap(4)
+    advanceUntil(ns2, function(s) return s.pose == "liedown3" end)
+    local log
+    slash("test")
+    log = recordPoses(ns2, function(s) return s.state == "prep" end, 5)
+    local poses = {}
+    for i = 1, #log do poses[i] = log[i].pose end
+    eq(table.concat(poses, ","), "liedown2,liedown1,prep")
+end)
+
+test("/bunny test while asleep plays the wake-up, then hops", function()
+    local ns2 = bootNap(6)
+    advanceUntil(ns2, function(s) return s.pose == "sleep2" end)
+    slash("test")
+    eq(ns2.Bunny:GetDebugState().state, "waking")
+    local log = recordPoses(ns2, function(s) return s.state == "prep" end, 5)
+    local poses = {}
+    for i = 1, #log do poses[i] = log[i].pose end
+    eq(table.concat(poses, ","), "wake1,wake2,wake3,wake4,prep")
+    near(log[#log].at - log[1].at, seqTotal(ns2.Bunny.SEQUENCES.wake), STEP * 6, "wake duration")
+end)
+
+test("/bunny test while waking finishes waking, then hops instead of idling", function()
+    local ns2 = bootNap(8)
+    advanceUntil(ns2, function(s) return s.pose == "wake2" end, 40)
+    slash("test")
+    local log = recordPoses(ns2, function(s) return s.state == "prep" end, 5)
+    local poses = {}
+    for i = 1, #log do poses[i] = log[i].pose end
+    eq(table.concat(poses, ","), "wake2,wake3,wake4,prep")
+end)
+
+test("hiding mid-nap pauses cleanly and resumes the nap", function()
+    for _, phase in ipairs({ "drowsy2", "liedown2", "sleep3", "sleepEar" }) do
+        local ns2 = bootNap(phase == "sleepEar" and 31 or 12)
+        advanceUntil(ns2, function(s) return s.pose == phase end, 120)
+        local left = ns2.Bunny:GetDebugState().sleepUntil - mock.now
+        slash("hide")
+        local s = ns2.Bunny:GetDebugState()
+        eq(s.state, "stopped", phase)
+        eq(s.onUpdate, false); eq(s.y, 0)
+        eq(mock.pendingTimers(), 0, "no timers while hidden (" .. phase .. ")")
+        eq(s.pose, "sleep1", "hidden in a valid sleeping pose (" .. phase .. ")")
+        mock.advance(120) -- time passes while hidden
+        eq(ns2.Bunny:GetDebugState().pose, "sleep1")
+        slash("show")
+        s = ns2.Bunny:GetDebugState()
+        eq(s.state, "sleep", "resumes asleep (" .. phase .. ")")
+        near(s.sleepUntil - mock.now, math.max(left, 1), 1e-6, "remaining nap kept")
+        advanceUntil(ns2, function(st) return st.state == "idle" end, 40)
+    end
+end)
+
+test("hiding while waking resumes awake", function()
+    local ns2 = bootNap(13)
+    advanceUntil(ns2, function(s) return s.pose == "wake3" end, 40)
+    UIParent:Hide()
+    eq(ns2.Bunny:GetDebugState().pose, "idle")
+    eq(mock.pendingTimers(), 0)
+    UIParent:Show()
+    eq(ns2.Bunny:GetDebugState().state, "idle")
+end)
+
+test("changing settings mid-nap keeps the bunny asleep", function()
+    local ns2 = bootNap(14)
+    advanceUntil(ns2, function(s) return s.state == "sleep" end)
+    eq(slash("size 48"), true)
+    local s = ns2.Bunny:GetDebugState()
+    eq(s.state, "sleep"); eq(s.pose, "sleep1")
+    advanceUntil(ns2, function(st) return st.state == "idle" end, 40)
+end)
+
+test("after a nap the bunny hops again before napping twice", function()
+    local ns2 = bootNap(15)
+    advanceUntil(ns2, function(s) return s.state == "idle" end, 40)
+    advanceUntil(ns2, function(s) return s.state ~= "idle" end, 20)
+    eq(ns2.Bunny:GetDebugState().state, "prep", "next action is a hop")
 end)
 
 ----------------------------------------------------------------------------

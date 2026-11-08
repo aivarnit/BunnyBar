@@ -20,7 +20,9 @@ BunnyBar/
     ├── bunny-hop.tga
     ├── bunny-idle.tga
     ├── bunny-land.tga
-    └── bunny-sleep.tga
+    ├── bunny-sleep.tga
+    ├── bunny-sleepy.tga
+    └── bunny-wake.tga
 ```
 
 ## 2. Find your AddOns folder

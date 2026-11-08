@@ -1,8 +1,9 @@
 -- BunnyBar: the bunny frame, sprite poses and the hop/idle/sleep state machine.
 --
 -- Performance model
---   * Waiting (idle, sleeping, between hops) is driven by C_Timer, so nothing
---     runs per frame while the bunny sits still.
+--   * Waiting (idle, sleeping, between hops) and every sprite-sequence step
+--     (getting sleepy, lying down, breathing, waking) is driven by C_Timer,
+--     so nothing runs per frame while the bunny is on the ground.
 --   * An OnUpdate script is attached only while the bunny is airborne
 --     (~0.4 s per hop) and removed on landing.
 --   * No tables or closures are created per frame; all callbacks are
@@ -25,12 +26,15 @@ local random, abs, max = math.random, math.abs, math.max
 
 local TEXTURE_PATH = "Interface\\AddOns\\" .. addonName .. "\\Textures\\"
 
--- Each sheet is a horizontal strip of 32x32 frames.
+-- Each sheet is a horizontal strip of 32x32 frames. `slots` is the strip
+-- width in frames (a power of two; unused slots are transparent padding).
 Bunny.SHEETS = {
-    idle  = { file = TEXTURE_PATH .. "bunny-idle.tga",  count = 4 },
-    hop   = { file = TEXTURE_PATH .. "bunny-hop.tga",   count = 2 },
-    land  = { file = TEXTURE_PATH .. "bunny-land.tga",  count = 1 },
-    sleep = { file = TEXTURE_PATH .. "bunny-sleep.tga", count = 2 },
+    idle   = { file = TEXTURE_PATH .. "bunny-idle.tga",   count = 4, slots = 4 },
+    hop    = { file = TEXTURE_PATH .. "bunny-hop.tga",    count = 2, slots = 2 },
+    land   = { file = TEXTURE_PATH .. "bunny-land.tga",   count = 1, slots = 1 },
+    sleepy = { file = TEXTURE_PATH .. "bunny-sleepy.tga", count = 7, slots = 8 },
+    sleep  = { file = TEXTURE_PATH .. "bunny-sleep.tga",  count = 6, slots = 8 },
+    wake   = { file = TEXTURE_PATH .. "bunny-wake.tga",   count = 4, slots = 4 },
 }
 
 -- Pose name -> { sheet, frame index }
@@ -42,11 +46,45 @@ Bunny.POSES = {
     prep    = { "hop", 1 },
     jump    = { "hop", 2 },
     land    = { "land", 1 },
-    sleep1  = { "sleep", 1 },
-    sleep2  = { "sleep", 2 },
+    -- getting sleepy: heavy eyelids, yawn, nodding off
+    drowsy1 = { "sleepy", 1 },
+    drowsy2 = { "sleepy", 2 },
+    drowsy3 = { "sleepy", 3 },
+    -- lying down (eased from nodding to curled up)
+    liedown1 = { "sleepy", 4 },
+    liedown2 = { "sleepy", 5 },
+    liedown3 = { "sleepy", 6 },
+    liedown4 = { "sleepy", 7 },
+    -- asleep: rest, inhale (+1 px torso), hold, exhale; plus twitches
+    sleep1 = { "sleep", 1 },
+    sleep2 = { "sleep", 2 },
+    sleep3 = { "sleep", 3 },
+    sleep4 = { "sleep", 4 },
+    sleepEar  = { "sleep", 5 },
+    sleepNose = { "sleep", 6 },
+    -- waking up: eyes open, rise, stretch, sit up
+    wake1 = { "wake", 1 },
+    wake2 = { "wake", 2 },
+    wake3 = { "wake", 3 },
+    wake4 = { "wake", 4 },
 }
 
-local SHEETS, POSES = Bunny.SHEETS, Bunny.POSES
+-- Multi-frame sequences: { pose, seconds } in playback order. These are not
+-- scaled by the speed setting. scripts/generate_sprites.py mirrors these
+-- timings for the animated preview; the tests keep the two in sync.
+Bunny.SEQUENCES = {
+    drowsy  = { { "drowsy1", 0.24 }, { "drowsy2", 0.28 }, { "drowsy3", 0.22 } },
+    liedown = { { "liedown1", 0.15 }, { "liedown2", 0.15 }, { "liedown3", 0.16 }, { "liedown4", 0.18 } },
+    breathe = { { "sleep1", 0.65 }, { "sleep2", 0.55 }, { "sleep3", 0.65 }, { "sleep4", 0.55 } },
+    wake    = { { "wake1", 0.22 }, { "wake2", 0.20 }, { "wake3", 0.26 }, { "wake4", 0.20 } },
+}
+-- Getting up early (interrupted while lying down): the lie-down frames in
+-- reverse, a little quicker.
+Bunny.SEQUENCES.rise = {
+    { "liedown4", 0.10 }, { "liedown3", 0.10 }, { "liedown2", 0.10 }, { "liedown1", 0.10 },
+}
+
+local SHEETS, POSES, SEQUENCES = Bunny.SHEETS, Bunny.POSES, Bunny.SEQUENCES
 
 ----------------------------------------------------------------------------
 -- Timing (seconds at speed 1.0; hop duration itself comes from settings)
@@ -55,8 +93,9 @@ local SHEETS, POSES = Bunny.SHEETS, Bunny.POSES
 local PREP_TIME = 0.14      -- crouch before take-off
 local LAND_TIME = 0.12      -- squash after landing
 local BETWEEN_HOPS = 0.08   -- pause between hops of one journey
-local SLEEP_MIN, SLEEP_MAX = 10, 25
-local SLEEP_BREATH = 0.9    -- breathing frame toggle while asleep
+local SLEEP_MIN, SLEEP_MAX = 10, 25 -- time spent asleep (whole breaths)
+local TWITCH_CHANCE = 0.3   -- per breath: chance of an ear or nose twitch
+local TWITCH_TIME = 0.3
 local FIDGET_MIN, FIDGET_MAX = 2.5, 6
 
 ----------------------------------------------------------------------------
@@ -66,13 +105,16 @@ local FIDGET_MIN, FIDGET_MAX = 2.5, 6
 local frame, sprite, backdrop, label
 local db
 
-local state = "stopped" -- stopped | idle | prep | air | land | between | sleep
+-- stopped | idle | prep | air | land | between | drowsy | liedown | sleep | rise | waking
+local state = "stopped"
 local x, y = nil, 0     -- sprite offset inside the track (x = left edge)
 local facing = 1        -- 1 = right, -1 = left
 local destX = 0
 local hopFromX, hopToX, hopElapsed, hopDur = 0, 0, 0, 0.4
 local lastWasNap = false
-local sleepUntil, sleepPhase = 0, 1
+local sleepUntil = 0
+local resumeSleepFor        -- seconds of nap left when hidden mid-nap
+local seq, seqIndex, seqDone -- sequence player
 
 local actionTimer, poseTimer
 local currentSheet, currentPose, currentFacing
@@ -80,7 +122,7 @@ local currentSheet, currentPose, currentFacing
 local stats = { hops = 0, journeys = 0, naps = 0, airTime = 0, since = nil }
 
 -- Forward declarations (mutually recursive state functions).
-local enterIdle, decideNext, enterSleep, sleepTick, startJourney
+local enterIdle, decideNext, enterSleep, lieDown, startBreath, breathEnd, startJourney
 local beginHop, launch, land, afterLand, idleFidget, idleRestore, onUpdate
 
 ----------------------------------------------------------------------------
@@ -118,8 +160,8 @@ local function setPose(name)
         sprite:SetTexture(sheet.file, "CLAMP", "CLAMP", "NEAREST")
         currentSheet = sheet
     end
-    local left = (pose[2] - 1) / sheet.count
-    local right = pose[2] / sheet.count
+    local left = (pose[2] - 1) / sheet.slots
+    local right = pose[2] / sheet.slots
     if facing < 0 then left, right = right, left end -- mirror horizontally
     sprite:SetTexCoord(left, right, 0, 1)
     currentPose, currentFacing = name, facing
@@ -176,25 +218,81 @@ function decideNext()
     startJourney(Util.ChooseDestination(x, minX, maxX, db.size, random))
 end
 
-function enterSleep()
-    state = "sleep"
-    stats.naps = stats.naps + 1
-    if poseTimer then poseTimer:Cancel(); poseTimer = nil end
-    sleepUntil = GetTime() + Util.RandomRange(SLEEP_MIN, SLEEP_MAX)
-    sleepPhase = 1
-    setPose("sleep1")
-    schedule(SLEEP_BREATH, sleepTick)
-end
-
-function sleepTick()
+-- Sequence player: shows each { pose, seconds } step on a C_Timer and calls
+-- `done` after the last one. No per-frame work, no per-step closures.
+local function seqStep()
     actionTimer = nil
-    if GetTime() >= sleepUntil then
-        enterIdle()
+    seqIndex = seqIndex + 1
+    local step = seq[seqIndex]
+    if not step then
+        local done = seqDone
+        seq, seqDone = nil, nil
+        done()
         return
     end
-    sleepPhase = 3 - sleepPhase
-    setPose(sleepPhase == 1 and "sleep1" or "sleep2")
-    schedule(SLEEP_BREATH, sleepTick)
+    setPose(step[1])
+    schedule(step[2], seqStep)
+end
+
+local function playSequence(sequence, newState, done, first)
+    -- Cancel whatever was pending (e.g. the next breathing frame when woken
+    -- early); seqStep() clears the handle without cancelling it.
+    cancelTimers()
+    state = newState
+    seq, seqIndex, seqDone = sequence, (first or 1) - 1, done
+    seqStep()
+end
+
+local function sleepDuration()
+    return Util.RandomRange(SLEEP_MIN, SLEEP_MAX)
+end
+
+-- idle -> getting sleepy -> lying down -> breathing loop -> waking -> idle
+function enterSleep()
+    stats.naps = stats.naps + 1
+    sleepUntil = GetTime() + sleepDuration()
+    playSequence(SEQUENCES.drowsy, "drowsy", lieDown)
+end
+
+function lieDown()
+    playSequence(SEQUENCES.liedown, "liedown", startBreath)
+end
+
+function startBreath()
+    playSequence(SEQUENCES.breathe, "sleep", breathEnd)
+end
+
+-- Runs between breaths (resting pose, torso down): wake up, twitch, or keep
+-- breathing. Waking only happens here, so it never starts mid-inhale.
+function breathEnd()
+    if GetTime() >= sleepUntil then
+        playSequence(SEQUENCES.wake, "waking", enterIdle)
+    elseif random() < TWITCH_CHANCE then
+        setPose(random() < 0.5 and "sleepEar" or "sleepNose")
+        schedule(TWITCH_TIME, startBreath)
+    else
+        startBreath()
+    end
+end
+
+-- Get up from whatever stage of a nap we are in, then call `done`.
+local function wakeThen(done)
+    if state == "drowsy" then
+        -- Still sitting up: drowsy frames are close enough to idle to cut.
+        if actionTimer then actionTimer:Cancel(); actionTimer = nil end
+        seq, seqDone = nil, nil
+        done()
+    elseif state == "liedown" then
+        -- Reverse from the frame currently shown (k): next is k-1.
+        local n = #SEQUENCES.rise
+        playSequence(SEQUENCES.rise, "rise", done, n + 2 - seqIndex)
+    elseif state == "sleep" then
+        playSequence(SEQUENCES.wake, "waking", done)
+    elseif state == "waking" or state == "rise" then
+        seqDone = done -- already getting up; continue afterwards
+    else
+        done()
+    end
 end
 
 function startJourney(target)
@@ -398,7 +496,7 @@ function Bunny:ApplySettings(recenter)
     x = Util.Clamp(x, minX, maxX)
     destX = x
     place()
-    setPose("idle")
+    setPose(resumeSleepFor and "sleep1" or "idle")
     if wasRunning or frame:IsVisible() then self:Start() end
 end
 
@@ -408,18 +506,38 @@ function Bunny:Start()
     stats.since = stats.since or GetTime()
     local minX, maxX = bounds()
     x = Util.Clamp(x or (minX + maxX) / 2, minX, maxX)
-    enterIdle()
+    if resumeSleepFor then
+        -- Hidden mid-nap: carry on sleeping for the time that was left.
+        sleepUntil = GetTime() + resumeSleepFor
+        resumeSleepFor = nil
+        y = 0
+        place()
+        startBreath()
+    else
+        enterIdle()
+    end
 end
 
+local NAPPING = { drowsy = true, liedown = true, sleep = true }
+
+-- Pause everything. Leaves a consistent resting state: on the ground, no
+-- timers, no OnUpdate, either upright or (when hidden mid-nap) asleep.
 function Bunny:Stop()
+    if state == "stopped" then return end
     cancelTimers()
     if frame then frame:SetScript("OnUpdate", nil) end
     if state == "air" then x = hopToX end -- finish the hop (invisible: we're hidden)
+    if NAPPING[state] then
+        resumeSleepFor = max(sleepUntil - GetTime(), 1)
+    else
+        resumeSleepFor = nil
+    end
+    seq, seqDone = nil, nil
     y = 0
     state = "stopped"
     if frame and x then
         place()
-        setPose("idle")
+        setPose(resumeSleepFor and "sleep1" or "idle")
     end
 end
 
@@ -435,17 +553,26 @@ function Bunny:SetLocked(locked)
     label:SetShown(not locked)
 end
 
--- Start a hop journey right now (used by /bunny test). Wakes a sleeping bunny.
+local function testJourney()
+    lastWasNap = false
+    local minX, maxX = bounds()
+    startJourney(Util.ChooseDestination(x, minX, maxX, db.size, random))
+end
+
+-- Start a hop journey right now (used by /bunny test). A napping bunny wakes
+-- up properly first (waking or rising sequence), then hops.
 function Bunny:TestHop()
     if not frame or not frame:IsVisible() then return false end
     if state == "prep" or state == "air" or state == "land" or state == "between" then
         return true -- already hopping
     end
     if state == "stopped" then self:Start() end
-    cancelTimers()
-    lastWasNap = false
-    local minX, maxX = bounds()
-    startJourney(Util.ChooseDestination(x, minX, maxX, db.size, random))
+    if state == "idle" then
+        cancelTimers()
+        testJourney()
+    else
+        wakeThen(testJourney)
+    end
     return true
 end
 
@@ -453,7 +580,8 @@ end
 function Bunny:GetDebugState()
     return {
         state = state, x = x, y = y, facing = facing, destX = destX,
-        pose = currentPose, onUpdate = frame and frame:GetScript("OnUpdate") ~= nil or false,
+        pose = currentPose, sleepUntil = sleepUntil, resumeSleepFor = resumeSleepFor,
+        onUpdate = frame and frame:GetScript("OnUpdate") ~= nil or false,
         hops = stats.hops, journeys = stats.journeys, naps = stats.naps,
         airTime = stats.airTime, since = stats.since,
     }

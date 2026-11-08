@@ -4,18 +4,21 @@ A tiny pixel-art bunny that lives above your action bar in **World of Warcraft: 
 
 It hops back and forth on its own little track, blinks, twitches its ears and sometimes takes a nap. That's all it does. It doesn't automate anything, read combat data or touch your action buttons.
 
-![BunnyBar sprite sheet: idle, blink, ear twitch, breathe, hop preparation, jump, landing, and two sleeping frames](docs/images/sprite-preview.png)
+![Animated preview of a full nap: the bunny gets sleepy, yawns, lies down, breathes with drifting z's, twitches an ear, then wakes, stretches and sits up](docs/images/sleep-preview.gif)
 
-> **Screenshot / GIF placeholder:** an in-game capture is still to come. The image above shows the actual sprites at 8× zoom.
+![BunnyBar sprite sheet, one animation per row: idle and hopping; getting sleepy and lying down; sleeping breath cycle with ear and nose twitches; waking up](docs/images/sprite-preview.png)
+
+> **Screenshot placeholder:** an in-game capture is still to come. The images above use the actual sprites, the animated one with the addon's real frame timings.
 
 ## Features
 
 - **Original pixel art**: a 32×32 white bunny with pink inner ears, drawn from code (`scripts/generate_sprites.py`) and rendered with nearest-neighbour filtering so pixels stay crisp.
 - **Natural movement**: it waits 4–12 seconds, picks a random spot on its track and gets there in a series of small parabolic hops (crouch, jump, land). It faces the way it's going and never teleports.
-- **Idle life**: blinking, ear twitches and breathing, plus an occasional nap with drifting "z"s.
+- **Idle life**: blinking, ear twitches and breathing.
+- **Naps**: now and then the bunny gets drowsy, yawns, curls up and sleeps, breathing slowly with a rising "z" and the odd ear or nose twitch. Then it wakes, stretches and sits up. Every step is a separate frame, so nothing snaps from pose to pose.
 - **Unobtrusive**: an independent, click-through decorative frame drawn *below* the action-button layer. It never modifies, hooks or overlaps protected frames.
 - **Configurable**: size, speed, hop interval, track width and hop height. You can drag it anywhere, and settings are saved per account.
-- **Lightweight**: no per-frame work while sitting still. Updates run only during the ~0.4 s of each hop. No libraries, no network, under 40 KB of textures.
+- **Lightweight**: no per-frame work while sitting still. Updates run only during the ~0.4 s of each hop. No libraries, no network, about 110 KB of textures.
 
 ## Installation
 
@@ -47,7 +50,7 @@ Step-by-step instructions, including how to create a missing `AddOns` folder and
 | `/bunny interval 8` | Average seconds between hops, 2–120 (default 8) |
 | `/bunny width 480` | Track width, 64–2000 (default 480) |
 | `/bunny height 16` | Hop height, 0–64 (default 16) |
-| `/bunny test` | Hop right now (also wakes a sleeping bunny) |
+| `/bunny test` | Hop right now (a napping bunny wakes up first) |
 | `/bunny stats` | Status, hop counters and performance info |
 
 `/bunnybar` works as an alias. A numeric command with no value, such as `/bunny size`, prints the current value. Full reference: [docs/COMMANDS.md](docs/COMMANDS.md).
@@ -69,7 +72,7 @@ WoW Forever runs on the modern (Midnight-era, 12.1.x) client and API, *not* the 
 
 BunnyBar is designed to cost effectively nothing on a 2020 M1 MacBook Air:
 
-- **Idle, sleeping and between hops:** no `OnUpdate` script at all. State changes are scheduled with `C_Timer`, a few per minute.
+- **Idle, napping and between hops:** no `OnUpdate` script at all. State changes and animation frames are scheduled with `C_Timer`: a few per minute while idle, and roughly 2 per second while asleep.
 - **During a hop:** a single `OnUpdate` runs for ~0.4 s and is removed on landing. At default settings that's roughly 3–6 % of wall time.
 - **Allocations:** no tables or closures are created per frame.
 - **Hidden:** `/bunny hide`, or hiding the UI with Alt+Z, cancels every timer and update.

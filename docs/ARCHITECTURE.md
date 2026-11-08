@@ -38,7 +38,8 @@ addon/BunnyBar/
 ├── Config.lua       defaults, limits, SavedVariables sanitising, slash commands
 ├── Animation.lua    the frame, sprite poses, state machine, placement, stats
 ├── Core.lua         event wiring (ADDON_LOADED, PLAYER_LOGIN, layout events)
-└── Textures/        generated 32x32-frame sprite strips (TGA, 32-bit BGRA)
+└── Textures/        generated 32x32-frame sprite strips (TGA, 32-bit BGRA,
+                     padded to power-of-two widths)
 scripts/
 ├── generate_sprites.py   pixel art -> TGA + PNG preview (stdlib only)
 ├── validate.py           static checks + runs the Lua test-suite
@@ -72,7 +73,7 @@ UIParent
 ```text
           ┌──────── interval × U(0.5, 1.5) ────────┐
           ▼                                         │
- ┌──── idle ───(sleepChance, never twice)──► sleep ─┘ (10–25 s, breathing frames)
+ ┌──── idle ───(sleepChance, never twice)──► nap ───┘ (drowsy → lie down → sleep 10–25 s → wake; see Naps)
  │  (blink / twitch / breathe fidgets on a separate timer)
  │
  └─► journey to random destination (≥ one sprite width away, inside bounds)
@@ -82,9 +83,37 @@ UIParent
                                                             └─► idle
 ```
 
-All durations except naps and fidgets are divided by `speed`. Each hop covers at most `max(8, 1.5 × size)` units horizontally (48 at the default size), so a long journey is several small hops rather than one huge leap.
+Hop-related durations are divided by `speed`; nap and fidget timings are not. Each hop covers at most `max(8, 1.5 × size)` units horizontally (48 at the default size), so a long journey is several small hops rather than one huge leap.
 
 **The arc:** horizontal position is linear in time and height is `4·h·t·(1−t)`, which is a true ballistic parabola peaking at `hopHeight` when `t = 0.5`. Large frame-time spikes are clamped at `t = 1`, so the bunny lands exactly on its target.
+
+### Naps
+
+A nap is a chain of multi-frame sequences, defined as `{ pose, seconds }` lists in `Bunny.SEQUENCES` and played by a small timer-driven sequence player:
+
+| Phase | State | Frames | Duration |
+|---|---|---|---|
+| Getting sleepy | `drowsy` | heavy eyelids → yawn → nodding off | 0.74 s |
+| Lying down | `liedown` | 4 frames interpolated from the nodding pose to the curled-up pose | 0.64 s |
+| Sleeping | `sleep` | rest → inhale → hold → exhale, looped | 2.4 s per breath |
+| Waking up | `waking` | eyes open → rise → stretch with yawn → sit up | 0.88 s |
+
+- **Breathing:** the torso (and the ears resting on it) rises exactly 1 px on the inhale, and the head and ground line don't move. A "z" drifts up one step per frame.
+- **Twitches:** between breaths, 30 % of the time, an ear-flick or nose-twitch frame plays for 0.3 s. It only ever sits between two resting-torso frames, so it never causes a jump.
+- **Ending a nap:** the nap length (10–25 s, drawn when the nap starts) is checked only between breaths. Waking therefore always starts from the exhaled resting pose.
+- **Ground line:** every frame except the mid-air jump has its lowest pixel on row 29, so lying down and getting up never make the bunny sink or float. The landing frame used to sit on row 30, a 1 px dip on every landing; that is now fixed.
+- **Sprite sheets:** `bunny-sleepy.tga` (drowsy + lying down, 7 of 8 slots), `bunny-sleep.tga` (4 breaths + 2 twitches, 6 of 8 slots) and `bunny-wake.tga` (4 slots). Texture coordinates are computed per slot.
+
+**Interruptions:**
+
+| While… | `/bunny test` | Hidden (`/bunny hide`, Alt+Z, settings change) |
+|---|---|---|
+| getting sleepy | cuts straight to the hop (the drowsy frames are still upright) | paused; resumes **asleep** with the remaining nap time |
+| lying down | plays the lie-down frames backwards from the current frame (`rise`), then hops | same |
+| asleep | plays the wake-up, then hops | same |
+| waking / rising | finishes getting up, then hops instead of idling | paused; resumes awake |
+
+On `Stop()` the bunny is always left in a valid resting state: on the ground, no timers, no `OnUpdate`, and showing either the idle or the sleeping frame.
 
 **Timers:** at most two `C_Timer` handles exist at any time: `actionTimer` (state transitions) and `poseTimer` (idle fidgets). Every callback is a file-level function, so nothing allocates per frame.
 
@@ -105,7 +134,8 @@ A dragged position is stored as `BOTTOM` → `UIParent BOTTOM` with an x offset 
 | Layer | Tool | What it proves |
 |---|---|---|
 | Static | `scripts/validate.py` | TOC metadata and references (exact-case), no unlisted Lua, Lua 5.1 syntax (via LuaJIT/lua5.1), no 5.2+ syntax, no forbidden APIs (`print`, `io`, `os`, `hooksecurefunc`, combat log, secure templates), TGA format/size/frames/transparency, sprites match the generator |
-| Offline behaviour | `tests/lua/run_tests.lua` + `wow_mock.lua` | Loads the real addon files in TOC order. Covers defaults, sanitising, slash parsing and validation, 10 simulated minutes of movement (bounds, ≤ 2.5 units per frame, facing, naps, idle waits ≥ 4 s, `OnUpdate` only while airborne, < 15 % of frames), hide/show/Alt+Z pausing, drag and save, reset, placement heuristics (secret values, erroring APIs, bars at the top), unknown events, global leaks |
+| Offline behaviour | `tests/lua/run_tests.lua` + `wow_mock.lua` | Loads the real addon files in TOC order. Covers defaults, sanitising, slash parsing and validation, 10 simulated minutes of movement (bounds, ≤ 2.5 units per frame, facing, naps, idle waits ≥ 4 s, `OnUpdate` only while airborne, < 15 % of frames), hide/show/Alt+Z pausing, drag and save, reset, placement heuristics (secret values, erroring APIs, bars at the top), unknown events, global leaks. **Naps:** sequence frame counts and timing windows, full-nap frame order and per-frame durations, no movement or `OnUpdate` during a nap, twitches only between breaths, waking only from the resting frame, `/bunny test` in every nap phase, hiding in every phase (no timers left, valid pose, nap resumes with its remaining time), settings changes mid-nap, no back-to-back naps |
+| Art | `tests/test_static.py` | One shared ground row, breathing moves the torso exactly 1 px and leaves the head still, twitches are subtle, consecutive frames overlap (silhouette IoU ≥ 0.7), z glyphs never touch the bunny, generator timings match the Lua sequences, the animated GIF decodes |
 | Tooling | `tests/test_static.py` | Validators catch broken inputs (negative tests). Packaging is reproducible and verification catches a wrong root, missing files and junk files. Every command is documented. |
 | **In game** | manual, see below | **Not yet done.** This is the only layer that proves real compatibility. |
 
@@ -120,10 +150,15 @@ Run these in WoW Forever and note the client build (shown on the login screen):
 3. The bunny appears just above the main action bar, centred. Check `/fstack` over the bar and record the bar's frame name.
 4. The sprite is crisp, not blurry, at UI scale 1 and at another scale.
 5. Within about 15 s it hops. The arc is smooth, it faces its direction of travel, and it lands cleanly.
-6. Watch for a nap (or force one by waiting) and check the `z` frames.
-7. Run every command in [COMMANDS.md](COMMANDS.md), including the invalid inputs.
-8. Unlock, drag, lock, `/reload`: the position persists. `/bunny reset` brings it back above the bar.
-9. Hide and show the UI with Alt+Z. Enter and leave combat. Use Edit Mode and move the action bar: there should be no errors and no "Interface action failed because of an AddOn" messages.
-10. Clicking action buttons right under the bunny still works.
-11. `/bunny stats` prints memory and CPU figures (or says they're not available).
-12. Optional: compare FPS on an M1 MacBook Air with `/bunny hide` and `/bunny show`.
+6. Watch a full nap. Waiting works, or type `/run BunnyBarDB.sleepChance = 1` and wait one idle period (set it back with `/bunny reset` afterwards). Check that:
+   - getting sleepy, lying down and waking look smooth at your normal UI scale, and again at `/bunny size 64`;
+   - breathing is visible but subtle;
+   - the bunny never sinks or jumps vertically between frames;
+   - the "z" stays clear of the head.
+7. During each nap phase, try `/bunny test`, `/bunny hide` + `/bunny show`, and Alt+Z twice. The bunny should rise or wake before hopping, and resume its nap after being hidden.
+8. Run every command in [COMMANDS.md](COMMANDS.md), including the invalid inputs.
+9. Unlock, drag, lock, `/reload`: the position persists. `/bunny reset` brings it back above the bar.
+10. Hide and show the UI with Alt+Z. Enter and leave combat. Use Edit Mode and move the action bar: there should be no errors and no "Interface action failed because of an AddOn" messages.
+11. Clicking action buttons right under the bunny still works.
+12. `/bunny stats` prints memory and CPU figures (or says they're not available).
+13. Optional: compare FPS on an M1 MacBook Air with `/bunny hide` and `/bunny show`.

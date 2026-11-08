@@ -274,11 +274,14 @@ def is_pow2(n: int) -> bool:
 
 
 def texture_references(addon_dir: Path = ADDON_DIR):
-    """Map texture file name -> declared frame count from Animation.lua."""
+    """Map texture file name -> (frame count, slot count) from Animation.lua.
+    `slots` is the strip width in frames; unused slots are padding."""
     src = (addon_dir / "Animation.lua").read_text(encoding="utf-8")
     refs = {}
-    for m in re.finditer(r'"([\w-]+\.tga)"\s*,\s*count\s*=\s*(\d+)', src):
-        refs[m.group(1)] = int(m.group(2))
+    for m in re.finditer(
+            r'"([\w-]+\.tga)"\s*,\s*count\s*=\s*(\d+)(?:\s*,\s*slots\s*=\s*(\d+))?', src):
+        count = int(m.group(2))
+        refs[m.group(1)] = (count, int(m.group(3) or count))
     return refs
 
 
@@ -286,7 +289,7 @@ def check_textures(r: Report, addon_dir: Path = ADDON_DIR):
     refs = texture_references(addon_dir)
     r.check(len(refs) >= 4, "textures: Animation.lua declares sprite sheets", str(refs))
     tex_dir = addon_dir / "Textures"
-    for name, count in sorted(refs.items()):
+    for name, (count, slots) in sorted(refs.items()):
         path = tex_dir / name
         if not r.check(exists_exact_case(tex_dir, name) if tex_dir.exists() else False,
                        f"textures: {name} exists"):
@@ -298,8 +301,11 @@ def check_textures(r: Report, addon_dir: Path = ADDON_DIR):
             continue
         r.check(alpha == 8, f"textures: {name} has 8-bit alpha", str(alpha))
         r.check(is_pow2(w) and is_pow2(h), f"textures: {name} has power-of-two size", f"{w}x{h}")
-        r.check(h == FRAME and w >= FRAME * count,
-                f"textures: {name} fits {count} frame(s) of {FRAME}x{FRAME}", f"{w}x{h}")
+        r.check(slots >= count, f"textures: {name} declares slots >= count", f"{count}/{slots}")
+        r.check(h == FRAME and w == FRAME * slots,
+                f"textures: {name} is {slots} slot(s) of {FRAME}x{FRAME}", f"{w}x{h}")
+        if w != FRAME * slots or h != FRAME:
+            continue
         r.check(path.stat().st_size <= MAX_TEXTURE_BYTES, f"textures: {name} is small",
                 f"{path.stat().st_size} bytes")
         for i in range(count):
@@ -310,6 +316,9 @@ def check_textures(r: Report, addon_dir: Path = ADDON_DIR):
                     f"textures: {name} frame {i + 1} has a sprite", f"{opaque} opaque px")
             r.check(all(c[3] == 0 for c in corners),
                     f"textures: {name} frame {i + 1} has a transparent background")
+        for i in range(count, slots):
+            pad = [rows[y][x] for y in range(FRAME) for x in range(i * FRAME, (i + 1) * FRAME)]
+            r.check(all(p[3] == 0 for p in pad), f"textures: {name} padding slot {i + 1} is empty")
         whites = sum(1 for row in rows for p in row if p[3] and min(p[:3]) > 230)
         pinks = sum(1 for row in rows for p in row if p[3] and p[0] > 220 and p[1] < 200 and p[2] > 140)
         r.check(whites > 0 and pinks > 0, f"textures: {name} has white fur and pink details")

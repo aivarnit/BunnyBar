@@ -17,7 +17,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import functools  # noqa: E402
+
 import generate_sprites  # noqa: E402
+
+# Building every asset (incl. the GIF) takes a few seconds; do it once.
+_build = functools.lru_cache(maxsize=None)(generate_sprites.build)
 import package  # noqa: E402
 import validate  # noqa: E402
 
@@ -115,8 +120,9 @@ class TextureTests(unittest.TestCase):
         self.assertEqual(errors_for(validate.check_textures, validate.ADDON_DIR), [])
 
     def test_sheet_dimensions(self):
-        expected = {"bunny-idle.tga": 128, "bunny-hop.tga": 64,
-                    "bunny-land.tga": 32, "bunny-sleep.tga": 64}
+        expected = {"bunny-idle.tga": 128, "bunny-hop.tga": 64, "bunny-land.tga": 32,
+                    "bunny-sleepy.tga": 256, "bunny-sleep.tga": 256, "bunny-wake.tga": 128}
+        self.assertEqual(set(validate.texture_references()), set(expected))
         for name, width in expected.items():
             w, h, bpp, alpha, top_left, _ = validate.read_tga(validate.ADDON_DIR / "Textures" / name)
             self.assertEqual((w, h, bpp, alpha, top_left), (width, 32, 32, 8, True), name)
@@ -137,7 +143,7 @@ class TextureTests(unittest.TestCase):
             self.assertTrue(any("unreferenced" in e for e in errors_for(validate.check_textures, d)))
 
     def test_generator_is_deterministic_and_committed(self):
-        a, b = generate_sprites.build(), generate_sprites.build()
+        a, b = _build(), generate_sprites.build()
         self.assertEqual(a, b)
         for path, data in a.items():
             self.assertTrue(path.exists(), path)
@@ -147,6 +153,203 @@ class TextureTests(unittest.TestCase):
         for name, frames in generate_sprites.frames().items():
             for c in frames:
                 self.assertEqual((c.w, c.h), (32, 32), name)
+
+
+Z_RGB = generate_sprites.ZZZ[:3]
+
+
+def silhouette(c):
+    """Opaque bunny pixels (ignoring the floating 'z' glyphs)."""
+    return {(x, y) for y in range(32) for x in range(32)
+            if c.px[y][x][3] and c.px[y][x][:3] != Z_RGB}
+
+
+def ground_row(c):
+    return max(y for x, y in silhouette(c))
+
+
+def iou(a, b):
+    sa, sb = silhouette(a), silhouette(b)
+    return len(sa & sb) / len(sa | sb)
+
+
+def lua_sequences():
+    """Parse Bunny.SEQUENCES from Animation.lua -> {name: [(pose, secs)]}."""
+    import re
+    src = (validate.ADDON_DIR / "Animation.lua").read_text()
+    out = {}
+    for m in re.finditer(r"^\s+(\w+)\s*=\s*\{((?:\s*\{\s*\"\w+\",\s*[\d.]+\s*\},?)+)\s*\},?$",
+                         src, re.M):
+        steps = re.findall(r'\{\s*"(\w+)",\s*([\d.]+)\s*\}', m.group(2))
+        out[m.group(1)] = [(p, float(t)) for p, t in steps]
+    return out
+
+
+def gif_frames(data: bytes):
+    """Tiny GIF decoder (enough for our own encoder's output)."""
+    import struct
+    assert data[:6] == b"GIF89a"
+    w, h, flags = struct.unpack("<HHB", data[6:11])
+    pos = 13 + 3 * (2 << (flags & 7))
+    frames, delays = [], []
+    while True:
+        b = data[pos]
+        if b == 0x3B:
+            break
+        if b == 0x21:
+            label = data[pos + 1]
+            if label == 0xF9:
+                delays.append(struct.unpack("<H", data[pos + 4:pos + 6])[0])
+            pos += 2
+            while data[pos]:
+                pos += data[pos] + 1
+            pos += 1
+            continue
+        assert b == 0x2C, hex(b)
+        pos += 10
+        min_size = data[pos]
+        pos += 1
+        stream = bytearray()
+        while data[pos]:
+            stream += data[pos + 1:pos + 1 + data[pos]]
+            pos += data[pos] + 1
+        pos += 1
+        frames.append(lzw_decode(bytes(stream), min_size))
+    return w, h, frames, delays
+
+
+def lzw_decode(stream: bytes, min_size: int):
+    clear, eoi = 1 << min_size, (1 << min_size) + 1
+    size = min_size + 1
+    table = [bytes([i]) for i in range(clear)] + [b"", b""]
+    out, prev = bytearray(), None
+    acc = nbits = 0
+    it = iter(stream)
+    while True:
+        while nbits < size:
+            acc |= next(it) << nbits
+            nbits += 8
+        code = acc & ((1 << size) - 1)
+        acc >>= size
+        nbits -= size
+        if code == clear:
+            table = table[:clear + 2]
+            size, prev = min_size + 1, None
+            continue
+        if code == eoi:
+            return bytes(out)
+        if code < len(table):
+            entry = table[code]
+            if prev is not None:
+                table.append(prev + entry[:1])
+        else:
+            entry = prev + prev[:1]
+            table.append(entry)
+        out += entry
+        prev = entry
+        if len(table) == (1 << size) and size < 12:
+            size += 1
+
+
+class SleepArtTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.sheets = generate_sprites.frames()
+        cls.idle = cls.sheets["bunny-idle"][0]
+        sleepy = cls.sheets["bunny-sleepy"]
+        cls.drowsy, cls.liedown = sleepy[:3], sleepy[3:]
+        cls.sleep = cls.sheets["bunny-sleep"]
+        cls.wake = cls.sheets["bunny-wake"]
+
+    def test_frame_counts(self):
+        self.assertEqual((len(self.drowsy), len(self.liedown), len(self.sleep), len(self.wake)),
+                         (3, 4, 6, 4))
+
+    def test_every_grounded_frame_shares_one_ground_row(self):
+        rows = {}
+        for name, frames in self.sheets.items():
+            for i, c in enumerate(frames):
+                if (name, i) == ("bunny-hop", 1):
+                    continue  # mid-air jump frame
+                rows[f"{name}[{i + 1}]"] = ground_row(c)
+        self.assertEqual(set(rows.values()), {29}, rows)
+
+    def test_breathing_moves_torso_exactly_one_pixel(self):
+        rest, inhale = self.sleep[0], self.sleep[1]
+        self.assertEqual(ground_row(rest), ground_row(inhale))
+        a, b = silhouette(rest), silhouette(inhale)
+        moved = 0
+        for x in range(32):
+            ta = min((y for xx, y in a if xx == x), default=None)
+            tb = min((y for xx, y in b if xx == x), default=None)
+            if ta is None or tb is None:
+                self.assertEqual(ta, tb, f"column {x}")
+                continue
+            self.assertIn(ta - tb, (0, 1), f"column {x} top moved {ta - tb}px")
+            moved += ta - tb == 1
+        self.assertGreater(moved, 3, "inhale should visibly lift the back")
+        # The head (front part of the frame) stays perfectly still.
+        head = lambda s: {(x, y) for x, y in s if x >= 21}
+        self.assertEqual(head(a), head(b))
+        # Hold/exhale frames repeat the same two torso shapes.
+        self.assertEqual(silhouette(self.sleep[2]), b)
+        self.assertEqual(silhouette(self.sleep[3]), a)
+
+    def test_twitch_frames_are_subtle_variants_of_rest(self):
+        # Twitches sit between an exhale (sleep4) and the next rest (sleep1),
+        # both of which share the resting torso shape.
+        rest = self.sleep[0]
+        ear, nose = self.sleep[4], self.sleep[5]
+        self.assertLess(len(silhouette(ear) ^ silhouette(rest)), 30, "ear flick is small")
+        self.assertGreater(len(silhouette(ear) ^ silhouette(rest)), 0)
+        # Nose twitch: same silhouette, only a few face pixels change colour.
+        self.assertEqual(silhouette(nose), silhouette(rest))
+        face = sum(1 for y in range(32) for x in range(32)
+                   if nose.px[y][x] != rest.px[y][x]
+                   and Z_RGB not in (nose.px[y][x][:3], rest.px[y][x][:3]))
+        self.assertTrue(0 < face <= 4, face)
+        for c in (ear, nose):
+            self.assertEqual(ground_row(c), ground_row(rest))
+
+    def test_consecutive_frames_overlap_without_jumps(self):
+        order = ([self.idle] + self.drowsy + self.liedown + self.sleep[:4] + [self.sleep[0]]
+                 + self.wake + [self.idle])
+        for i, (a, b) in enumerate(zip(order, order[1:])):
+            self.assertGreaterEqual(iou(a, b), 0.7, f"transition {i} -> {i + 1}")
+        # The lying-down sequence ends exactly in the sleeping rest pose.
+        self.assertEqual(silhouette(self.liedown[-1]), silhouette(self.sleep[0]))
+
+    def test_z_glyphs_stay_clear_of_the_bunny(self):
+        for i, c in enumerate(self.sleep):
+            zs = [(x, y) for y in range(32) for x in range(32) if c.px[y][x][:3] == Z_RGB]
+            self.assertTrue(zs, f"sleep frame {i + 1} has a z")
+            body = silhouette(c)
+            for x, y in zs:
+                for dx, dy in ((0, 1), (1, 0), (-1, 0), (0, -1)):
+                    self.assertNotIn((x + dx, y + dy), body, f"z touches bunny in frame {i + 1}")
+
+    def test_timings_match_lua(self):
+        lua = lua_sequences()
+        for name, secs in generate_sprites.TIMINGS.items():
+            self.assertIn(name, lua)
+            self.assertEqual([t for _, t in lua[name]], secs, name)
+        windows = {"drowsy": (0.5, 0.8), "liedown": (0.5, 0.8),
+                   "breathe": (2.0, 3.0), "wake": (0.6, 1.0)}
+        for name, (lo, hi) in windows.items():
+            self.assertTrue(lo <= sum(generate_sprites.TIMINGS[name]) <= hi, name)
+
+    def test_animated_preview_decodes(self):
+        data = _build()[generate_sprites.GIF_PATH]
+        self.assertLess(len(data), 100_000)
+        w, h, frames, delays = gif_frames(data)
+        timeline = generate_sprites.nap_timeline(self.sheets)
+        self.assertEqual(len(frames), len(timeline))
+        self.assertEqual(len(delays), len(timeline))
+        for f in frames:
+            self.assertEqual(len(f), w * h)
+        self.assertEqual(delays[3:6], [round(t * 100) for t in generate_sprites.TIMINGS["drowsy"]])
+        # Frames differ (the animation actually animates).
+        self.assertGreater(len(set(frames)), 15)
 
 
 class PackageTests(unittest.TestCase):

@@ -48,7 +48,8 @@ jobs:
           test "$(unzip -Z1 "$zip" | cut -d/ -f1 | sort -u)" = "BunnyBar"
           for f in BunnyBar.toc Util.lua Config.lua Animation.lua Core.lua \
                    Textures/bunny-idle.tga Textures/bunny-hop.tga \
-                   Textures/bunny-land.tga Textures/bunny-sleep.tga; do
+                   Textures/bunny-land.tga Textures/bunny-sleep.tga \
+                   Textures/bunny-sleepy.tga Textures/bunny-wake.tga; do
             unzip -Z1 "$zip" | grep -qx "BunnyBar/$f" || { echo "missing BunnyBar/$f"; exit 1; }
           done
 
