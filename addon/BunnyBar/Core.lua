@@ -27,8 +27,8 @@ local function tryRegister(event)
     return pcall(events.RegisterEvent, events, event)
 end
 
-local function requestRefresh()
-    ns.Placement.RequestRefresh()
+local function requestRefresh(event)
+    ns.Placement.RequestRefresh(event)
 end
 
 local handlers = {}
@@ -55,9 +55,14 @@ function handlers.PLAYER_LOGIN()
     C_Timer.After(1, ns.Placement.Refresh)
 end
 
-for i = 1, #LAYOUT_EVENTS do handlers[LAYOUT_EVENTS[i]] = requestRefresh end
+local isLayoutEvent = {}
+for i = 1, #LAYOUT_EVENTS do isLayoutEvent[LAYOUT_EVENTS[i]] = true end
 
 events:SetScript("OnEvent", function(_, event, ...)
+    if isLayoutEvent[event] then
+        requestRefresh(event)
+        return
+    end
     local handler = handlers[event]
     if handler then handler(...) end
 end)

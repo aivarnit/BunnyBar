@@ -374,20 +374,24 @@ end
 -- Position the track: the saved (dragged) position wins; otherwise sit just
 -- above the highest visible bottom bar. Unchanged auto positions are not
 -- re-applied, so frequent refresh requests cost almost nothing.
+-- Returns `moved` and `unstable` (see Placement.Detect) for auto placement.
 function Bunny:ApplyPosition()
-    if not frame then return end
+    if not frame then return false, false end
     db = ns.db
     if db.point then
         lastAutoX, lastAutoY = nil, nil
         frame:ClearAllPoints()
         frame:SetPoint(db.point, UIParent, db.relativePoint, db.x, db.y)
-        return
+        return false, false
     end
-    local ox, oy = ns.Placement.Detect(db.trackWidth)
-    if ox == lastAutoX and oy == lastAutoY and frame:GetNumPoints() > 0 then return end
+    local ox, oy, _, _, _, unstable = ns.Placement.Detect(db.trackWidth)
+    if ox == lastAutoX and oy == lastAutoY and frame:GetNumPoints() > 0 then
+        return false, unstable
+    end
     lastAutoX, lastAutoY = ox, oy
     frame:ClearAllPoints()
     frame:SetPoint("BOTTOM", UIParent, "BOTTOM", ox, oy)
+    return true, unstable
 end
 
 function Bunny:IsAutoPositioned()

@@ -70,7 +70,8 @@ local function boot(saved, opts)
     for _, name in ipairs({ "BunnyBarDB", "BunnyBarFrame", "MainActionBar", "MainMenuBar",
         "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBar5", "MultiBar6", "MultiBar7",
         "OverrideActionBar", "MainStatusTrackingBarContainer", "SecondaryStatusTrackingBarContainer",
-        "StatusTrackingBarManager", "MainMenuExpBar", "ReputationWatchBar", "issecretvalue", "SLASH_BUNNYBAR1",
+        "StatusTrackingBarManager", "MainMenuExpBar", "ReputationWatchBar", "EditModeManagerFrame",
+        "SettingsPanel", "InterfaceOptionsFrame", "issecretvalue", "SLASH_BUNNYBAR1",
         "SLASH_BUNNYBAR2", "C_AddOns", "C_AddOnProfiler", "Enum", "UpdateAddOnMemoryUsage",
         "GetAddOnMemoryUsage" }) do
         _G[name] = nil
@@ -1008,6 +1009,268 @@ test("bar hooks are installed once and never replace Blizzard scripts", function
     eq(#MultiBarBottomLeft._hooks.OnShow, 1)
     eq(#MainStatusTrackingBarContainer.bars.xp._hooks.OnHide, 1)
     eq(MultiBarBottomLeft:GetScript("OnShow"), own)
+end)
+
+----------------------------------------------------------------------------
+-- Live repositioning
+----------------------------------------------------------------------------
+
+io.write("Live repositioning\n")
+
+-- Count automatic placement passes (each pass calls Placement.Detect once).
+local function countDetect(ns2)
+    local n = { calls = 0 }
+    local orig = ns2.Placement.Detect
+    ns2.Placement.Detect = function(...)
+        n.calls = n.calls + 1
+        return orig(...)
+    end
+    return n
+end
+
+-- Advance until no placement refresh is pending; returns seconds taken.
+local function settle(ns2, limit)
+    local t0 = mock.now
+    while ns2.Placement.IsRefreshPending() do
+        if mock.now - t0 > (limit or 5) then error("placement never settled") end
+        mock.advance(1 / 60)
+    end
+    return mock.now - t0
+end
+
+test("Action Bar 2 on/off/on: moves within a debounce, then settles", function()
+    local ns2 = boot(nil, { setup = stdLayout() })
+    mock.advance(1.05)
+    eq(anchorY(), 158)
+    MultiBarBottomLeft:Hide()
+    mock.advance(0.2)
+    eq(anchorY(), 106, "down onto the XP bar within 0.2 s")
+    truthy(settle(ns2) <= 1.1, "settle re-checks are bounded")
+    MultiBarBottomLeft:Show()
+    mock.advance(0.2)
+    eq(anchorY(), 158, "back above Action Bar 2")
+    settle(ns2)
+    MultiBarBottomLeft:Hide()
+    mock.advance(0.2)
+    eq(anchorY(), 106)
+    settle(ns2)
+    eq(ns2.Placement.IsRefreshPending(), false)
+end)
+
+test("XP container hidden / shown as a whole", function()
+    local ns2 = boot(nil, { setup = stdLayout({ ab2 = false }) })
+    mock.advance(1.05)
+    MainStatusTrackingBarContainer:Hide()
+    mock.advance(0.2)
+    eq(anchorY(), 92)
+    MainStatusTrackingBarContainer:Show()
+    mock.advance(0.2)
+    eq(anchorY(), 106)
+    settle(ns2)
+end)
+
+test("reputation bar replacing the XP bar", function()
+    local ns2 = boot(nil, { setup = stdLayout({ ab2 = false, extra = function()
+        local sec = mkBar("SecondaryStatusTrackingBarContainer", 674, 92, 572, 8, false)
+        sec.bars = { rep = CreateFrame("Frame", nil, sec) }
+    end }) })
+    mock.advance(1.05)
+    eq(anchorY(), 106)
+    -- Same container swaps XP for reputation in one go: one pass, no move.
+    local n = countDetect(ns2)
+    local c = MainStatusTrackingBarContainer
+    c.bars.xp:Hide(); c.bars.rep:Show()
+    settle(ns2)
+    eq(anchorY(), 106); eq(n.calls, 1, "one coalesced pass, nothing moved")
+    -- Rep moves to the (shorter) secondary container and the main one empties.
+    c.bars.rep:Hide(); c:Hide()
+    SecondaryStatusTrackingBarContainer:Show()
+    mock.advance(0.2)
+    eq(anchorY(), 102, "above the secondary rep bar")
+    settle(ns2)
+end)
+
+test("Edit Mode: moved bars picked up on layout event or when Edit Mode closes", function()
+    local ns2 = boot(nil, { setup = stdLayout({ extra = function()
+        mkBar("EditModeManagerFrame", 0, 0, 10, 10)
+        mkBar("SettingsPanel", 0, 0, 10, 10, false)
+    end }) })
+    mock.advance(1.05)
+    -- Bar resized silently, Edit Mode closed: OnHide of the manager triggers.
+    MultiBarBottomLeft:SetMockRect(674, 106, 572, 90)
+    EditModeManagerFrame:Hide()
+    mock.advance(0.2)
+    eq(anchorY(), 198)
+    -- Moved again, layout event only.
+    MultiBarBottomLeft:SetMockRect(674, 106, 572, 40)
+    mock.fire("EDIT_MODE_LAYOUTS_UPDATED")
+    mock.advance(0.2)
+    eq(anchorY(), 148)
+    -- Toggled in the Settings panel, then the panel is closed.
+    SettingsPanel:Show()
+    MultiBarBottomLeft._shown = false -- hidden without firing scripts
+    SettingsPanel:Hide()
+    mock.advance(0.2)
+    eq(anchorY(), 106)
+    local stats = ns2.Placement.GetStats()
+    eq(stats.lastReason, "SettingsPanel hidden")
+    settle(ns2)
+end)
+
+test("rapid successive changes collapse into one pass", function()
+    local ns2 = boot(nil, { setup = stdLayout() })
+    mock.advance(1.05)
+    local n = countDetect(ns2)
+    for i = 1, 50 do
+        MultiBarBottomLeft:SetShown(i % 2 == 0)
+        MainStatusTrackingBarContainer.bars.xp:SetShown(i % 3 ~= 0)
+        mock.advance(0.002)
+    end
+    -- Final: AB2 shown (i = 50), XP shown (50 % 3 ~= 0).
+    eq(n.calls, 0, "nothing evaluated during the burst")
+    mock.advance(0.2)
+    eq(n.calls, 1, "exactly one pass after the burst")
+    eq(anchorY(), 158)
+    settle(ns2)
+    truthy(n.calls <= 1 + #ns2.Placement.SETTLE)
+end)
+
+test("continuous changes still refresh at least every MAX_WAIT", function()
+    local ns2 = boot(nil, { setup = stdLayout() })
+    mock.advance(1.05)
+    local n = countDetect(ns2)
+    for i = 1, 30 do -- a change every 0.1 s for 3 s
+        MultiBarBottomLeft:SetShown(i % 2 == 0)
+        mock.advance(0.1)
+    end
+    truthy(n.calls >= 4, "refreshed during the storm: " .. n.calls)
+    settle(ns2)
+    eq(anchorY(), 158)
+end)
+
+test("frames laid out after a delay are picked up by a settle pass", function()
+    local laidOut = false
+    local ns2 = boot(nil, { setup = stdLayout() })
+    mock.advance(1.05)
+    eq(anchorY(), 158)
+    -- Hiding AB2 makes Blizzard re-lay out the XP container; its geometry is
+    -- unavailable for 0.4 s, then valid at a new position.
+    local c = MainStatusTrackingBarContainer
+    local origTop = c.GetTop
+    c.GetTop = function(self) if laidOut then return origTop(self) end return nil end
+    MultiBarBottomLeft:Hide()
+    C_Timer.After(0.4, function()
+        laidOut = true
+        c:SetMockRect(674, 92, 572, 16)
+    end)
+    mock.advance(0.2)
+    eq(anchorY(), 92, "first pass: XP not ready, sits on the main bar")
+    mock.advance(0.5)
+    eq(anchorY(), 110, "settle pass: above the freshly laid out XP bar")
+    settle(ns2)
+    -- Geometry that shifts later without any visibility change is caught too.
+    MultiBarBottomLeft:Show()
+    C_Timer.After(0.25, function() MultiBarBottomLeft:SetMockRect(674, 110, 572, 50) end)
+    mock.advance(0.2)
+    eq(anchorY(), 158)
+    settle(ns2)
+    eq(anchorY(), 162, "late shift picked up by the settle pass")
+end)
+
+test("settle re-checks stay bounded when geometry never becomes valid", function()
+    local ns2 = boot(nil, { setup = stdLayout({ extra = function()
+        local b = mkBar("MultiBarBottomRight", 674, 200, 572, 50)
+        function b:GetTop() return nil end
+    end }) })
+    mock.advance(1.05)
+    local n = countDetect(ns2)
+    mock.fire("EDIT_MODE_LAYOUTS_UPDATED")
+    settle(ns2)
+    eq(n.calls, 1 + #ns2.Placement.SETTLE)
+    mock.advance(10)
+    eq(n.calls, 1 + #ns2.Placement.SETTLE, "no further passes")
+end)
+
+test("own positioning never re-triggers a refresh (no recursion)", function()
+    local ns2 = boot(nil, { setup = stdLayout({ extra = function()
+        mkBar("MultiBarBottomRight", 1500, 40, 300, 40) -- off the track, hooked
+    end }) })
+    mock.advance(1.05)
+    local f = BunnyBarFrame
+    local orig = f.SetPoint
+    f.SetPoint = function(...)
+        -- Pathological: something toggles a hooked bar while we anchor.
+        MultiBarBottomRight:SetShown(not MultiBarBottomRight:IsShown())
+        return orig(...)
+    end
+    local n = countDetect(ns2)
+    MultiBarBottomLeft:Hide()
+    mock.advance(5)
+    truthy(n.calls <= 1 + #ns2.Placement.SETTLE, "passes: " .. n.calls)
+    eq(ns2.Placement.IsRefreshPending(), false)
+    f.SetPoint = nil
+end)
+
+test("manual position: live changes never move it or schedule work", function()
+    local ns2 = boot({ point = "BOTTOM", relativePoint = "BOTTOM", x = 10, y = 400 },
+        { setup = stdLayout({ extra = function() mkBar("EditModeManagerFrame", 0, 0, 10, 10) end }) })
+    mock.advance(1.05)
+    local stats = ns2.Placement.GetStats()
+    local requests = stats.requests
+    MultiBarBottomLeft:Hide()
+    MainStatusTrackingBarContainer.bars.xp:Hide()
+    EditModeManagerFrame:Hide()
+    for _, ev in ipairs({ "EDIT_MODE_LAYOUTS_UPDATED", "UI_SCALE_CHANGED", "PLAYER_LEVEL_UP" }) do
+        mock.fire(ev)
+    end
+    eq(ns2.Placement.IsRefreshPending(), false)
+    mock.advance(2)
+    eq(anchorY(), 400); eq(anchorX(), 10)
+    eq(stats.requests, requests, "requests ignored for manual positions")
+    slash("reset")
+    eq(anchorY(), 92, "reset: AB2 and XP hidden -> above the main bar")
+end)
+
+test("missing frames, missing HookScript and failing hooks are tolerated", function()
+    -- No Blizzard frames at all.
+    local ns2 = boot(nil)
+    mock.advance(1.05)
+    local _, hooks = ns2.Placement.GetStats()
+    eq(hooks, 0)
+    ns2.Placement.RequestRefresh("test")
+    settle(ns2)
+    eq(anchorY(), 100)
+    -- Frames that can't be hooked: plain table, erroring HookScript.
+    ns2 = boot(nil, { setup = function()
+        MainActionBar = { IsVisible = function() return true end,
+            GetLeft = function() return 674 end, GetRight = function() return 1246 end,
+            GetBottom = function() return 40 end, GetTop = function() return 90 end,
+            GetEffectiveScale = function() return 1 end }
+        local b = mkBar("MultiBarBottomLeft", 674, 106, 572, 50)
+        b.HookScript = function() error("not allowed") end
+        mkBar("EditModeManagerFrame", 0, 0, 10, 10).HookScript = false -- method absent
+    end })
+    mock.advance(1.05)
+    _, hooks = ns2.Placement.GetStats()
+    eq(hooks, 0, "nothing hookable")
+    eq(anchorY(), 158, "placement itself still works")
+    mock.fire("EDIT_MODE_LAYOUTS_UPDATED") -- events remain a fallback path
+    settle(ns2)
+    local before = #mock.chat
+    slash("bars")
+    truthy(table.concat(mock.chat, "\n", before + 1):find("0 frames hooked"))
+end)
+
+test("/bunny bars shows live-update diagnostics", function()
+    boot(nil, { setup = stdLayout() })
+    mock.advance(1.05)
+    MultiBarBottomLeft:Hide()
+    mock.advance(0.2)
+    local before = #mock.chat
+    slash("bars")
+    local text = table.concat(mock.chat, "\n", before + 1)
+    truthy(text:find("live updates: %d+ frames hooked, %d+ refreshes %(%d+ moves%)"), text)
+    truthy(text:find("last trigger: MultiBarBottomLeft hidden"), text)
 end)
 
 test("unknown layout events on older clients do not break loading", function()

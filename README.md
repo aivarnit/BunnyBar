@@ -118,7 +118,7 @@ The code layout and state machine are described in [docs/ARCHITECTURE.md](docs/A
 
 - **Not yet tested in game.** Everything is checked offline against a mock of the WoW API. See the manual checklist in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#manual-in-game-test-checklist).
 - **Automatic placement relies on Blizzard frame names that haven't been confirmed on Forever.** It knows the modern and legacy names for the bottom action bars and the XP/reputation bars. If Forever uses different names, those bars are ignored, and if none are found the bunny falls back to 100 units above the bottom of the screen. `/bunny bars` shows what was detected. You can always drag it with `/bunny unlock`.
-- Placement reacts to bars being shown or hidden and to layout events. A bar that changes *size* without either (rare) is picked up on the next layout event or `/reload`.
+- Placement reacts within about 0.2 s to bars being shown or hidden, to Edit Mode or the Settings panel closing, and to layout events, then re-checks briefly while Blizzard's layout settles. A bar that changes *size* with none of these happening (rare) is picked up on the next one, or on `/reload`.
 - Bars that are off to the side, outside the bunny's track, are deliberately ignored.
 - The bunny sits on the frame layer *below* action buttons, so if you overlap it with a bar, the buttons win.
 - Settings are account-wide. There are no per-character profiles.

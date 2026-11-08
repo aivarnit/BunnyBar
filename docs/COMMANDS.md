@@ -13,7 +13,7 @@ All commands start with `/bunny`, or the alias `/bunnybar`. Command words aren't
 | `/bunny unlock` | Show a translucent blue track that you can drag with the left mouse button. |
 | `/bunny reset` | Restore **all** settings to their defaults, return to automatic placement above the action bar, and re-centre the bunny. |
 | `/bunny test` | Hop now. A napping bunny gets up first: from deep sleep it plays the wake-up (about 0.9 s), and if it's still lying down it rises back up. Does nothing if it's already hopping. |
-| `/bunny bars` | Print where automatic placement put the bunny, and the status of every bar it checks: `visible` (with its top edge), `hidden`, `empty` (an XP/rep container with no bar showing), `off track`, `not at bottom`, `no geometry` and so on. Also lists frame names that don't exist on your client. |
+| `/bunny bars` | Print where automatic placement put the bunny, and the status of every bar it checks: `visible` (with its top edge), `hidden`, `empty` (an XP/rep container with no bar showing), `off track`, `not at bottom`, `no geometry` and so on. Also lists frame names that don't exist on your client, how many frames are watched for live updates, and what last triggered a re-placement. |
 | `/bunny stats` (alias `status`) | Print state, hop/nap counters, the share of time per-frame updates were active, memory use, and per-addon CPU time (if the client exposes it). |
 
 ## Numeric settings

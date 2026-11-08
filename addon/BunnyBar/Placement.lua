@@ -13,8 +13,9 @@
 --   * Visibility changes are observed with HookScript("OnShow"/"OnHide"),
 --     which adds a post-hook without replacing Blizzard's handler or
 --     touching action buttons. The hook only schedules a deferred refresh.
---   * Refreshes are coalesced into one deferred C_Timer call; there is no
---     per-frame positioning loop.
+--   * Refreshes are debounced (trailing, with a cap) into one C_Timer call,
+--     followed by at most a couple of short "settle" re-checks while the
+--     result is still changing. There is no per-frame positioning loop.
 
 local _, ns = ...
 local Util = ns.Util
@@ -26,12 +27,18 @@ Placement.GAP = 2               -- UI units between the bar top and the bunny
 Placement.FALLBACK_Y = 100      -- used when no candidate bar is found
 Placement.BOTTOM_FRACTION = 0.45 -- ignore bars whose top is above this share of the screen
 Placement.MAX_BAR_HEIGHT = 200  -- ignore implausibly tall frames
-Placement.REFRESH_DELAY = 0.25  -- coalescing window for refresh requests
+Placement.DEBOUNCE = 0.15       -- wait this long after the *last* change...
+Placement.MAX_WAIT = 0.6        -- ...but never longer than this after the first
+Placement.SETTLE = { 0.35, 1.0 } -- follow-up re-checks while the layout settles
 
 -- Frame names differ between client generations. Names that don't exist are
 -- skipped. kind = "main" (centres the bunny), "action" or "status".
 -- On WoW Forever these names are UNVERIFIED in game: use /bunny bars and
 -- /fstack to confirm them (see docs/ARCHITECTURE.md).
+-- Non-candidate frames whose closing usually follows a bar layout change
+-- (toggling bars in Edit Mode or Settings). OnHide only requests a refresh.
+Placement.TRIGGER_FRAMES = { "EditModeManagerFrame", "SettingsPanel", "InterfaceOptionsFrame" }
+
 Placement.CANDIDATES = {
     { name = "MainActionBar",        kind = "main" },   -- Action Bar 1 (11.2+ name)
     { name = "MainMenuBar",          kind = "main" },   -- Action Bar 1 (older name)
@@ -105,15 +112,21 @@ end
 
 -- Compute the automatic position.
 -- Returns xOffset (from screen centre), yOffset (from screen bottom),
--- found (boolean), anchorName (or nil), and the per-candidate results.
+-- found (boolean), anchorName (or nil), the per-candidate results, and
+-- `unstable` (a shown candidate had no usable geometry yet).
 function Placement.Detect(trackWidth)
     local parent = UIParent
     local screenW = parent:GetWidth()
     local results, eligible = {}, {}
     local main
+    local unstable = false
     for i, entry in ipairs(Placement.CANDIDATES) do
         local info, reason = Placement.Evaluate(entry)
         results[i] = { name = entry.name, info = info, reason = reason }
+        -- A shown bar without usable geometry may simply not be laid out yet.
+        if reason == "no geometry" or reason == "geometry error" or reason == "zero size" then
+            unstable = true
+        end
         if info then
             eligible[#eligible + 1] = info
             if info.kind == "main" and not main then main = info end
@@ -136,67 +149,131 @@ function Placement.Detect(trackWidth)
         if r.info and r.info.offTrack then r.info, r.reason = nil, "off track" end
     end
     if not best then
-        return 0, Placement.FALLBACK_Y, false, nil, results
+        return 0, Placement.FALLBACK_Y, false, nil, results, unstable
     end
     if not main then refX = best.cx end
-    return Util.Round(refX - screenW / 2), Util.Round(best.top + Placement.GAP), true, best.name, results
+    return Util.Round(refX - screenW / 2), Util.Round(best.top + Placement.GAP), true, best.name,
+        results, unstable
 end
 
 ----------------------------------------------------------------------------
 -- Refresh scheduling
 ----------------------------------------------------------------------------
 
-local pending = false
-local hooked = {}
+local timer          -- pending C_Timer handle (debounce or settle)
+local firstRequestAt -- start of the current debounce window
+local settlePass = 0 -- follow-up re-checks done for the current change
+local refreshing = false
+local hooked = {}    -- frame -> name, for frames we hooked
+local hookCount = 0
+local stats = { requests = 0, refreshes = 0, moves = 0, lastReason = nil, lastAt = nil }
 
--- Apply the automatic position now (no-op for a manually placed bunny).
-function Placement.Refresh()
-    pending = false
-    if not (ns.db and ns.Bunny and ns.Bunny:IsAutoPositioned()) then return end
-    -- While the whole UI is hidden (Alt+Z) every bar reads as hidden; the
-    -- bunny re-places itself when it is shown again.
-    if not UIParent:IsVisible() then return end
+local function canAutoPlace()
+    return ns.db and ns.Bunny and ns.Bunny:IsAutoPositioned() and UIParent:IsVisible()
+end
+
+local function cancelTimer()
+    if timer then timer:Cancel(); timer = nil end
+end
+
+local runRefresh -- forward
+
+local function scheduleSettle()
+    settlePass = settlePass + 1
+    timer = C_Timer.NewTimer(Placement.SETTLE[settlePass], runRefresh)
+end
+
+-- One placement pass. Re-checks a little later (bounded by #SETTLE) while
+-- the bunny keeps moving or a shown bar has no geometry yet, because
+-- Blizzard lays bottom bars out over the following frames.
+function runRefresh()
+    timer, firstRequestAt = nil, nil
+    if not canAutoPlace() then settlePass = 0; return end
+    refreshing = true
     Placement.HookBars()
-    ns.Bunny:ApplyPosition()
+    local ok, moved, unstable = pcall(ns.Bunny.ApplyPosition, ns.Bunny)
+    refreshing = false
+    stats.refreshes = stats.refreshes + 1
+    if ok and moved then stats.moves = stats.moves + 1 end
+    if ok and (moved or unstable) and settlePass < #Placement.SETTLE then
+        scheduleSettle()
+    else
+        settlePass = 0
+    end
 end
 
--- Ask for a refresh soon. Many requests in a short window (a layout change
--- shows and hides several bars at once) collapse into one.
-function Placement.RequestRefresh()
-    if pending or not UIParent:IsVisible() then return end
-    if not (ns.db and ns.Bunny and ns.Bunny:IsAutoPositioned()) then return end
-    pending = true
-    C_Timer.After(Placement.REFRESH_DELAY, Placement.Refresh)
+-- Apply the automatic position now (no-op for a manually placed bunny or
+-- while the UI is hidden: every bar reads as hidden then, and the bunny
+-- re-places itself when it is shown again).
+function Placement.Refresh()
+    cancelTimer()
+    settlePass = 0
+    runRefresh()
 end
 
-local function onBarVisibility()
-    Placement.RequestRefresh()
+-- Ask for a refresh soon. Trailing debounce: every request pushes the
+-- refresh back by DEBOUNCE, but never beyond MAX_WAIT after the first one,
+-- so a burst of show/hide changes collapses into a single pass that runs
+-- after Blizzard's layout has settled. `reason` is kept for /bunny bars.
+function Placement.RequestRefresh(reason)
+    -- Ignore changes caused by our own positioning.
+    if refreshing then return end
+    if not canAutoPlace() then return end
+    stats.requests = stats.requests + 1
+    stats.lastReason, stats.lastAt = reason or "request", GetTime()
+    local now = GetTime()
+    if not firstRequestAt or settlePass > 0 then firstRequestAt = now end
+    settlePass = 0
+    cancelTimer()
+    local delay = Placement.DEBOUNCE
+    local remaining = Placement.MAX_WAIT - (now - firstRequestAt)
+    if remaining < delay then delay = remaining > 0 and remaining or 0 end
+    timer = C_Timer.NewTimer(delay, runRefresh)
 end
 
-local function hook(f, key)
-    if hooked[key] or type(f) ~= "table" or type(f.HookScript) ~= "function" then return end
-    local ok1 = pcall(f.HookScript, f, "OnShow", onBarVisibility)
-    local ok2 = pcall(f.HookScript, f, "OnHide", onBarVisibility)
-    hooked[key] = ok1 or ok2
+local function onHookedShow(f)
+    Placement.RequestRefresh((hooked[f] or "frame") .. " shown")
+end
+local function onHookedHide(f)
+    Placement.RequestRefresh((hooked[f] or "frame") .. " hidden")
+end
+
+local function hook(f, name, showToo)
+    if hooked[f] or type(f) ~= "table" or type(f.HookScript) ~= "function" then return end
+    local ok1 = showToo and pcall(f.HookScript, f, "OnShow", onHookedShow) or false
+    local ok2 = pcall(f.HookScript, f, "OnHide", onHookedHide)
+    if ok1 or ok2 then
+        hooked[f] = name
+        hookCount = hookCount + 1
+    end
 end
 
 -- Hook visibility changes of every candidate that exists (and of the bars
--- inside status containers). Safe to call repeatedly; each frame is hooked
--- once. Frames created later are picked up on the next refresh.
+-- inside status containers), plus the closing of Edit Mode / Settings.
+-- Safe to call repeatedly; each frame is hooked once. Frames created later
+-- are picked up on the next refresh.
 function Placement.HookBars()
     for _, entry in ipairs(Placement.CANDIDATES) do
         local f = _G[entry.name]
         if type(f) == "table" then
-            hook(f, f)
+            hook(f, entry.name, true)
             if entry.kind == "status" and type(f.bars) == "table" and not isSecret(f.bars) then
-                for _, bar in pairs(f.bars) do hook(bar, bar) end
+                for key, bar in pairs(f.bars) do hook(bar, entry.name .. "." .. tostring(key), true) end
             end
         end
+    end
+    for _, name in ipairs(Placement.TRIGGER_FRAMES) do
+        local f = _G[name]
+        if type(f) == "table" then hook(f, name, false) end
     end
 end
 
 function Placement.IsRefreshPending()
-    return pending
+    return timer ~= nil
+end
+
+function Placement.GetStats()
+    return stats, hookCount
 end
 
 -- Human-readable report for /bunny bars.
@@ -223,6 +300,13 @@ function Placement.Describe(trackWidth)
     end
     if #missing > 0 then
         lines[#lines + 1] = "  not present on this client: " .. table.concat(missing, ", ")
+    end
+    lines[#lines + 1] = ("live updates: %d frames hooked, %d refreshes (%d moves) from %d requests"):format(
+        hookCount, stats.refreshes, stats.moves, stats.requests)
+    if stats.lastReason then
+        lines[#lines + 1] = ("  last trigger: %s, %.1f s ago"):format(stats.lastReason, GetTime() - stats.lastAt)
+    else
+        lines[#lines + 1] = "  last trigger: none yet (toggle a bar to test)"
     end
     return lines
 end
