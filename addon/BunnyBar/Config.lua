@@ -12,7 +12,8 @@ ns.Config = Config
 
 -- 1: v0.1 (size default 32). 2: appearance, portrait ears, size default 64.
 -- 3: styles, idle behaviours, burrowing, hover hearts.
-Config.SCHEMA_VERSION = 3
+-- 4: furColor is an optional override (nil = use the style's default).
+Config.SCHEMA_VERSION = 4
 Config.LEGACY_DEFAULT_SIZE = 32
 
 -- Default settings. `point == nil` means "auto": place the track just above
@@ -29,7 +30,9 @@ Config.DEFAULTS = {
     hopDuration = 0.4,  -- seconds in the air at speed 1.0
     sleepChance = 0.15, -- chance that an idle period ends in a nap
     -- Appearance (see Appearance.lua)
-    furColor = "F6F3FA", -- the original fur tone
+    -- furColor: custom fur colour override ("RRGGBB") or nil = the current
+    -- style's own default (Appearance registry `defaultFur`). Not listed
+    -- here because nil is a meaningful value; see Config.FurColor().
     variation = "classic",
     hat = "none",
     -- Portrait ears (see Ears.lua)
@@ -132,6 +135,8 @@ function Config.Sanitize(db)
     local legacy = not fresh and not (isFiniteNumber(db.schema) and db.schema >= 2)
 
     local clean = {}
+    -- Optional fur colour override; resolved against the style below.
+    clean.furColor = STRING_VALIDATORS.furColor(db.furColor)
     for key, default in pairs(Config.DEFAULTS) do
         local v = db[key]
         local limit = Config.LIMITS[key]
@@ -149,6 +154,12 @@ function Config.Sanitize(db)
             v = STRING_VALIDATORS[key](v) or default
         end
         clean[key] = v
+    end
+    -- Before schema 4 the colour was always stored. A stored colour equal to
+    -- the style's default meant "not customised", so it becomes no override.
+    local oldSchema = isFiniteNumber(db.schema) and db.schema or 0
+    if oldSchema < 4 and clean.furColor == Config.StyleDefaultFur(clean.variation) then
+        clean.furColor = nil
     end
     clean.schema = Config.SCHEMA_VERSION
 
@@ -213,8 +224,11 @@ end
 -- Validate and store one setting. Returns true, or false and an error.
 function Config.Set(key, value)
     local db = ns.db
-    if not db or Config.DEFAULTS[key] == nil then
+    if not db or (Config.DEFAULTS[key] == nil and key ~= "furColor") then
         return false, "unknown setting " .. tostring(key)
+    end
+    if key == "furColor" and value == nil then
+        return Config.ResetFurColor()
     end
     local limit = Config.LIMITS[key]
     if limit then
@@ -245,15 +259,40 @@ function Config.Set(key, value)
     return true
 end
 
--- The default fur colour of a style ("F6F3FA" for classic).
+-- The default fur colour of a style, from the Appearance registry
+-- (`defaultFur`); "F6F3FA" (classic) if the style is unknown.
+Config.CLASSIC_FUR = "F6F3FA"
 function Config.StyleDefaultFur(id)
     local def = ns.Appearance and ns.Appearance.Get("variation", id)
-    return def and def.defaultFur or Config.DEFAULTS.furColor
+    return def and def.defaultFur or Config.CLASSIC_FUR
 end
 
--- Switch style. If the fur colour is still the current style's default (the
--- player hasn't picked their own), it follows the new style's default;
--- a custom colour is always kept. Returns true, or false and an error.
+-- The fur colour actually shown: the custom override, else the style's own.
+function Config.FurColor(db)
+    db = db or ns.db
+    if not db then return Config.CLASSIC_FUR end
+    return db.furColor or Config.StyleDefaultFur(db.variation)
+end
+
+function Config.HasCustomFur(db)
+    db = db or ns.db
+    return db ~= nil and db.furColor ~= nil
+end
+
+-- Clear the custom colour: the current style's default applies again.
+function Config.ResetFurColor()
+    local db = ns.db
+    if not db then return false end
+    if db.furColor ~= nil then
+        db.furColor = nil
+        Config.Notify("furColor")
+    end
+    return true
+end
+
+-- Switch style. Without a custom colour the bunny takes the new style's own
+-- default (Config.FurColor resolves it); a custom colour - even one equal to
+-- some style's default, or white - is kept. Returns true, or false and an error.
 function Config.SetStyle(id)
     if type(id) ~= "string" then return false, "Choose a style." end
     id = id:lower()
@@ -263,13 +302,9 @@ function Config.SetStyle(id)
         return false, ("'%s' is not a style. Choose %s."):format(id, table.concat(names, ", "))
     end
     local db = ns.db
-    local followDefault = db.furColor == Config.StyleDefaultFur(db.variation)
-    if followDefault then db.furColor = Config.StyleDefaultFur(id) end
     if db.variation ~= id then
         db.variation = id
-        Config.Notify("variation")
-    elseif followDefault then
-        Config.Notify("furColor")
+        Config.Notify("variation") -- also re-tints: the default may change
     end
     return true
 end
@@ -471,13 +506,18 @@ Config.Handlers = {
     end,
     color = function(rest)
         if rest == "" then
-            ns.Print(("fur colour is #%s. Use /bunny color #RRGGBB or /bunny color reset."):format(ns.db.furColor))
+            ns.Print(("fur colour is #%s (%s). Use /bunny color #RRGGBB or /bunny color reset."):format(
+                Config.FurColor(), Config.HasCustomFur() and "custom" or ("default for " .. ns.db.variation)))
             return
         end
-        local value = rest:lower() == "reset" and Config.StyleDefaultFur(ns.db.variation) or rest
-        local ok, err = Config.Set("furColor", value)
+        if rest:lower() == "reset" then
+            Config.ResetFurColor()
+            ns.Print(("fur colour reset to the %s default #%s."):format(ns.db.variation, Config.FurColor()))
+            return
+        end
+        local ok, err = Config.Set("furColor", rest)
         if not ok then printError(err); return false end
-        ns.Print(("fur colour set to #%s."):format(ns.db.furColor))
+        ns.Print(("fur colour set to #%s."):format(Config.FurColor()))
     end,
     ears = function(rest)
         -- Development diagnostics (deliberately not in the help list).

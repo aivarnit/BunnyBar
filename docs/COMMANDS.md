@@ -8,7 +8,7 @@ All commands start with `/bunny`, or the alias `/bunnybar`. Command words aren't
 |---|---|
 | `/bunny` or `/bunny help` | Print the command list. |
 | `/bunny options` (aliases `config`, `settings`) | Open **Esc → Options → AddOns → BunnyBar**. In combat it opens as soon as combat ends. |
-| `/bunny color #RRGGBB` (alias `colour`) | Set the fur colour, for example `#FFB6C1` (pink), `#87CEEB` (sky blue) or `#000000`. The `#` is optional and case doesn't matter. Invalid values are rejected and the colour stays as it was. `/bunny color reset` restores the current style's default (`#F6F3FA` for Classic); `/bunny color` on its own prints the current value. |
+| `/bunny color #RRGGBB` (alias `colour`) | Set the fur colour, for example `#FFB6C1` (pink), `#87CEEB` (sky blue) or `#000000`. The `#` is optional and case doesn't matter. Invalid values are rejected and the colour stays as it was. `/bunny color reset` removes your custom colour so the current style's own default applies (`#F6F3FA` for Classic); `/bunny color` on its own says whether the colour is custom or the style's default; `/bunny color` on its own prints the current value. |
 | `/bunny ears player on\|off`, `/bunny ears party on\|off` | Show or hide bunny ears on your portrait or on party portraits. `/bunny ears` on its own prints the current state. |
 | `/bunny ears debug` | Diagnostics for portrait-ear layering, not shown in `/bunny` help. For each portrait it prints the frame names, the strata/level of the portrait and of the highest overlapping frame, and the ears' desired versus actual strata/level. It also shows whether Edit Mode is active, whether a re-check is scheduled, and the last trigger. Useful when reporting an issue. |
 | `/bunny show` | Show the bunny and resume animation. |

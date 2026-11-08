@@ -1345,9 +1345,9 @@ test("v0.1 settings are preserved, new keys get defaults", function()
         point = "BOTTOM", relativePoint = "BOTTOM", x = 15, y = 300 }
     boot(old)
     local db = BunnyBarDB
-    eq(db.schema, 3)
+    eq(db.schema, 4)
     for k, v in pairs(old) do if k ~= "schema" then eq(db[k], v, k) end end
-    eq(db.furColor, "F6F3FA"); eq(db.variation, "classic"); eq(db.hat, "none")
+    eq(db.furColor, nil, "no override"); eq(ns.Config.FurColor(db), "F6F3FA"); eq(db.variation, "classic"); eq(db.hat, "none")
     eq(db.earsPlayer, true); eq(db.earsParty, true)
 end)
 
@@ -1367,7 +1367,7 @@ test("invalid appearance values are repaired, valid ones canonicalised", functio
     local db = BunnyBarDB
     eq(db.furColor, "FFB6C1"); eq(db.variation, "classic"); eq(db.hat, "none"); eq(db.earsPlayer, true)
     boot({ schema = 2, furColor = "not a colour" })
-    eq(BunnyBarDB.furColor, "F6F3FA")
+    eq(BunnyBarDB.furColor, nil); eq(ns.Config.FurColor(BunnyBarDB), "F6F3FA")
 end)
 
 test("appearance registry: five styles + no hat yet", function()
@@ -1437,10 +1437,10 @@ test("/bunny color: validation, reset and query", function()
     boot(nil)
     eq(slash("color pink"), false)
     truthy(lastChat():find("not a colour"))
-    eq(BunnyBarDB.furColor, "F6F3FA", "unchanged after bad input")
+    eq(BunnyBarDB.furColor, nil, "unchanged after bad input")
     eq(slash("color ffb6c1"), true); eq(BunnyBarDB.furColor, "FFB6C1")
     eq(slash("color"), true); truthy(lastChat():find("#FFB6C1"))
-    eq(slash("color reset"), true); eq(BunnyBarDB.furColor, "F6F3FA")
+    eq(slash("color reset"), true); eq(BunnyBarDB.furColor, nil); eq(ns.Config.FurColor(BunnyBarDB), "F6F3FA")
 end)
 
 ----------------------------------------------------------------------------
@@ -1581,7 +1581,7 @@ test("invalid hex in the panel shows an error and keeps the colour", function()
     c.hex:MockType("#87CEEB")
     eq(c.error:IsShown(), false)
     c.reset:Click()
-    eq(BunnyBarDB.furColor, "F6F3FA"); eq(c.hex:GetText(), "#F6F3FA")
+    eq(BunnyBarDB.furColor, nil); eq(c.hex:GetText(), "#F6F3FA")
 end)
 
 test("size presets: radios, custom sizes, slash sync", function()
@@ -1662,7 +1662,7 @@ end)
 test("/bunny reset restores everything and updates the open panel", function()
     local ns2, c = bootPanel({ schema = 2, size = 128, furColor = "000000", earsPlayer = false })
     slash("reset")
-    eq(BunnyBarDB.size, 64); eq(BunnyBarDB.furColor, "F6F3FA"); eq(BunnyBarDB.earsPlayer, true)
+    eq(BunnyBarDB.size, 64); eq(BunnyBarDB.furColor, nil); eq(BunnyBarDB.earsPlayer, true)
     eq(c.hex:GetText(), "#F6F3FA"); eq(c.sizes[3]:GetChecked(), true)
     eq(c.ears.earsPlayer:GetChecked(), true)
     local r = bunnyLayers():GetVertexColor(); near(r, 0xF6 / 255)
@@ -2659,12 +2659,13 @@ end)
 test("style follows its default fur unless a custom colour was picked", function()
     local ns2 = boot({ schema = 3 })
     eq(slash("style devil"), true)
-    eq(BunnyBarDB.variation, "devil"); eq(BunnyBarDB.furColor, "E06E7C", "devil default fur")
-    eq(slash("style angel"), true); eq(BunnyBarDB.furColor, "FFF6E6")
+    eq(BunnyBarDB.variation, "devil"); eq(BunnyBarDB.furColor, nil); eq(ns.Config.FurColor(BunnyBarDB), "E06E7C", "devil default fur")
+    eq(slash("style angel"), true); eq(ns.Config.FurColor(BunnyBarDB), "FFF6E6")
     eq(slash("color #87CEEB"), true)
     eq(slash("style dragon"), true)
     eq(BunnyBarDB.variation, "dragon"); eq(BunnyBarDB.furColor, "87CEEB", "custom colour kept")
-    eq(slash("color reset"), true); eq(BunnyBarDB.furColor, "86C784", "reset -> style default")
+    eq(slash("color reset"), true); eq(BunnyBarDB.furColor, nil, "reset clears the override")
+    eq(ns.Config.FurColor(BunnyBarDB), "86C784", "reset -> style default")
     eq(slash("style ghost"), false); truthy(lastChat():find("not a style"))
     eq(BunnyBarDB.variation, "dragon")
     eq(slash("style"), true); truthy(lastChat():find("style is dragon"))
@@ -2709,7 +2710,7 @@ end)
 test("schema 2 settings migrate to 3 with behaviour and heart defaults", function()
     boot({ schema = 2, size = 96, furColor = "112233", variation = "classic", earsParty = false, speed = 1.5 })
     local db = BunnyBarDB
-    eq(db.schema, 3); eq(db.size, 96); eq(db.furColor, "112233"); eq(db.earsParty, false); eq(db.speed, 1.5)
+    eq(db.schema, 4); eq(db.size, 96); eq(db.furColor, "112233"); eq(db.earsParty, false); eq(db.speed, 1.5)
     eq(db.idleExtras, true); eq(db.carrot, true); eq(db.burrow, true); eq(db.burrowFrequency, "normal")
     eq(db.hearts, true); eq(db.heartIntensity, "normal"); eq(db.variation, "classic")
     boot({ schema = 3, burrowFrequency = "SOMETIMES", heartIntensity = "EXTRA", variation = "Devil" })
@@ -2928,6 +2929,150 @@ test("behaviour and heart settings persist and sync with the panel", function()
     eq(c3.burrowFrequency[3]:GetChecked(), true, "slash -> panel")
     c3.styles[2]:Click()
     eq(BunnyBarDB.variation, "devil")
+end)
+
+----------------------------------------------------------------------------
+-- v0.3 fixes: style default colours and the style-aware preview
+----------------------------------------------------------------------------
+
+io.write("v0.3 colour reset and preview\n")
+
+local STYLE_DEFAULTS = { classic = "F6F3FA", devil = "E06E7C", angel = "FFF6E6",
+                         dragon = "86C784", zombie = "A9C4A2" }
+
+local function hexOf(r, g, b) return ns.Util.RGBToHex(r, g, b) end
+
+test("style defaults come from the Appearance registry", function()
+    local ns2 = boot({ schema = 4 })
+    for id, hex in pairs(STYLE_DEFAULTS) do
+        eq(ns2.Config.StyleDefaultFur(id), hex, id)
+        eq(ns2.Appearance.Get("variation", id).defaultFur, hex, id)
+    end
+end)
+
+test("Reset Color restores the selected style's default and clears the override", function()
+    for id, hex in pairs(STYLE_DEFAULTS) do
+        local ns2, c = bootPanel({ schema = 4, variation = id, furColor = "123456" })
+        eq(ns2.Config.HasCustomFur(), true)
+        local x0, state0 = ns2.Bunny:GetDebugState().x, ns2.Bunny:GetDebugState().state
+        c.reset:Click()
+        eq(BunnyBarDB.furColor, nil, id .. ": override cleared")
+        eq(ns2.Config.FurColor(), hex, id .. ": style default")
+        local fur = bunnyLayers()
+        eq(hexOf(fur:GetVertexColor()), hex, id .. ": live bunny")
+        eq(hexOf(c.previewLayers[1]:GetVertexColor()), hex, id .. ": preview")
+        eq(c.hex:GetText(), "#" .. hex, id .. ": hex box")
+        eq(hexOf(c.swatch._color[1], c.swatch._color[2], c.swatch._color[3]), hex, id .. ": swatch")
+        local h, sat, v = ns2.Util.RGBToHSV(ns2.Util.HSVToRGB(ns2.Options.GetHSV()))
+        eq(ns2.Util.RGBToHex(ns2.Util.HSVToRGB(ns2.Options.GetHSV())), hex, id .. ": HSV state")
+        eq(c.brightness:GetValue(), math.floor(v * 100 + 0.5), id .. ": brightness slider")
+        eq(ns2.Bunny:GetDebugState().state, state0, "main bunny state untouched")
+        eq(ns2.Bunny:GetDebugState().x, x0)
+        -- Reset persists across /reload.
+        local saved = BunnyBarDB
+        local ns3 = boot(saved)
+        eq(BunnyBarDB.furColor, nil); eq(ns3.Config.FurColor(), hex, id .. " after reload")
+    end
+end)
+
+test("switching style without an override uses each style's own colour", function()
+    local ns2, c = bootPanel({ schema = 4 })
+    for i, id in ipairs({ "devil", "angel", "dragon", "zombie", "classic" }) do
+        if i % 2 == 0 then slash("style " .. id) else
+            for _, rb in ipairs(c.styles) do if rb.value == id then rb:Click() end end
+        end
+        eq(BunnyBarDB.variation, id); eq(BunnyBarDB.furColor, nil)
+        eq(hexOf(bunnyLayers():GetVertexColor()), STYLE_DEFAULTS[id], id .. ": bunny")
+        eq(hexOf(c.previewLayers[1]:GetVertexColor()), STYLE_DEFAULTS[id], id .. ": preview")
+        eq(c.hex:GetText(), "#" .. STYLE_DEFAULTS[id], id .. ": hex box follows")
+    end
+end)
+
+test("custom colours, including white and other styles' defaults, persist across styles", function()
+    for _, custom in ipairs({ "FFFFFF", "87CEEB", "E06E7C", "F6F3FA" }) do
+        local ns2, c = bootPanel({ schema = 4 })
+        c.hex:MockType("#" .. custom)
+        eq(BunnyBarDB.furColor, custom, custom .. " stored as an override")
+        eq(ns2.Config.HasCustomFur(), true)
+        for _, id in ipairs({ "devil", "angel", "dragon", "zombie", "classic" }) do
+            slash("style " .. id)
+            eq(ns2.Config.FurColor(), custom, custom .. " kept on " .. id)
+            eq(hexOf(c.previewLayers[1]:GetVertexColor()), custom)
+        end
+        local saved = BunnyBarDB
+        local ns3 = boot(saved)
+        eq(BunnyBarDB.furColor, custom, custom .. " survives /reload")
+        eq(ns3.Config.HasCustomFur(), true)
+    end
+end)
+
+test("the preview shows the selected style's sprites and follows every change", function()
+    local ns2, c = bootPanel({ schema = 4 })
+    local pv, fur, detail = c.preview, c.previewLayers[1], c.previewLayers[2]
+    local _, rel, rp, px, py = pv:GetPoint(1)
+    eq(pv:GetWidth(), 64); eq(pv:GetHeight(), 64)
+    truthy(fur._texture:find("Textures\\bunny%-idle%.tga"), fur._texture)
+    for _, id in ipairs({ "devil", "angel", "dragon", "zombie" }) do
+        slash("style " .. id)
+        truthy(fur._texture:find("Textures\\" .. id .. "\\bunny%-idle%.tga"), id .. ": " .. fur._texture)
+        eq(detail._texture, fur._texture, "both layers use the style's sheet")
+        local l, r, t, b = fur:GetTexCoord()
+        eq(l, 0); eq(r, 0.25); eq(t, 0); eq(b, 0.5)
+        local _, rel2, rp2, px2, py2 = pv:GetPoint(1)
+        eq(rel2, rel); eq(px2, px); eq(py2, py); eq(pv:GetWidth(), 64)
+    end
+    -- Colour change and reset reach the preview immediately.
+    c.hex:MockType("#336699")
+    eq(hexOf(fur:GetVertexColor()), "336699")
+    eq(detail._vertex, nil, "detail layer never tinted")
+    c.reset:Click()
+    eq(hexOf(fur:GetVertexColor()), STYLE_DEFAULTS.zombie)
+    -- Changes made while the panel is closed show when it reopens.
+    ns2.Options.panel:Hide()
+    slash("style angel")
+    slash("color #AA5500")
+    ns2.Options.panel:Show()
+    truthy(fur._texture:find("angel"), "reopened panel shows the new style")
+    eq(hexOf(fur:GetVertexColor()), "AA5500")
+end)
+
+test("updating the preview never changes the main bunny's animation", function()
+    local ns2, c = bootPanel({ schema = 4 })
+    slash("test carrot")
+    advanceUntil(ns2, function(s) return s.pose == "carrotHold" end, 10)
+    local before = ns2.Bunny:GetDebugState()
+    for _ = 1, 5 do ns2.Options.UpdatePreview(); ns2.Options.Refresh() end
+    local after = ns2.Bunny:GetDebugState()
+    eq(after.state, before.state); eq(after.pose, before.pose); eq(after.x, before.x)
+    eq(c.preview:GetScript("OnUpdate"), nil, "no animation loop for the preview")
+end)
+
+test("older saves: a stored style default becomes 'no override', custom colours stay", function()
+    local cases = {
+        { { schema = 2, furColor = "F6F3FA" }, nil },                          -- v0.2 untouched
+        { { schema = 3, variation = "devil", furColor = "E06E7C" }, nil },     -- followed style
+        { { schema = 3, variation = "classic", furColor = "E06E7C" }, "E06E7C" }, -- custom
+        { { schema = 3, variation = "angel", furColor = "FFFFFF" }, "FFFFFF" },   -- custom white
+        { { schema = 3, furColor = "nonsense" }, nil },
+        { { schema = 4, variation = "devil", furColor = "E06E7C" }, "E06E7C" },  -- explicit in v4
+    }
+    for i, case in ipairs(cases) do
+        local ns2 = boot(case[1])
+        eq(BunnyBarDB.furColor, case[2], "case " .. i)
+        eq(BunnyBarDB.schema, 4)
+    end
+end)
+
+test("/bunny color reports custom vs style default", function()
+    local ns2 = boot({ schema = 4, variation = "dragon" })
+    slash("color")
+    truthy(lastChat():find("#86C784") and lastChat():find("default for dragon"), lastChat())
+    slash("color #FFFFFF")
+    slash("color")
+    truthy(lastChat():find("#FFFFFF") and lastChat():find("custom"), lastChat())
+    slash("color reset")
+    truthy(lastChat():find("dragon default #86C784"), lastChat())
+    eq(BunnyBarDB.furColor, nil)
 end)
 
 ----------------------------------------------------------------------------

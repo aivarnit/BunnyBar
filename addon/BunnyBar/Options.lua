@@ -193,7 +193,7 @@ function Options.SetHexText(str)
     local hex, err = Util.ParseHex(str)
     if not hex then
         if c.error then c.error:SetText(err); c.error:Show() end
-        if c.hex then c.hex:SetText("#" .. ns.db.furColor) end
+        if c.hex then c.hex:SetText("#" .. ns.Config.FurColor()) end
         return false, err
     end
     if c.error then c.error:Hide() end
@@ -242,13 +242,14 @@ local function hexEnter(self)
 end
 
 local function hexEscape(self)
-    self:SetText("#" .. ns.db.furColor)
+    self:SetText("#" .. ns.Config.FurColor())
     self:ClearFocus()
 end
 
 local function resetColour()
     if c.error then c.error:Hide() end
-    ns.Config.Set("furColor", ns.Config.DEFAULTS.furColor)
+    -- Clear the override: the selected style's own default applies.
+    ns.Config.ResetFurColor()
     Options.Refresh()
 end
 
@@ -343,9 +344,8 @@ local function buildColour(x, y)
     pv:SetPoint("TOPLEFT", sq, "TOPRIGHT", 12, 0)
     local layers = ns.Appearance.CreateLayers(pv, "ARTWORK")
     layers[1]:SetAllPoints(pv)
-    local idle = ns.Bunny.SHEETS.idle
-    ns.Appearance.SetFrame(layers, ns.Appearance.SheetPath(idle.file), 1, idle.slots, false)
-    c.preview = pv
+    c.preview, c.previewLayers = pv, layers
+    Options.UpdatePreview()
 end
 
 -- A grid of radio buttons (`cols` per row). Returns the buttons and the y of
@@ -507,19 +507,35 @@ end
 -- Refresh: saved settings -> controls
 ----------------------------------------------------------------------------
 
+-- The preview shows the idle frame of the SELECTED style, using the same
+-- path resolution as the real bunny (Appearance.SheetPath + Bunny.SHEETS).
+-- Its fur layer is registered with Appearance, so it is tinted with the
+-- current colour on every Appearance.Apply(). Static frame: no animation
+-- loop, and the real bunny's state is never touched.
+function Options.UpdatePreview()
+    local layers = c.previewLayers
+    if not layers then return end
+    local idle = ns.Bunny.SHEETS.idle
+    ns.Appearance.SetFrame(layers, ns.Appearance.SheetPath(idle.file), 1, idle.slots, false)
+    local r, g, b = ns.Appearance.FurRGB()
+    layers[1]:SetVertexColor(r, g, b, 1)
+end
+
 function Options.Refresh()
     if not built or not ns.db then return end
     local db = ns.db
+    local fur = ns.Config.FurColor()
     syncing = true
+    Options.UpdatePreview()
 
     -- Re-derive HSV only when the colour was changed elsewhere (slash command,
-    -- hex box, reset), so dragging keeps the exact hue the user picked.
-    if db.furColor ~= shownHex then
-        local _, r, g, b = Util.ParseHex(db.furColor)
+    -- hex box, reset, style change), so dragging keeps the exact hue picked.
+    if fur ~= shownHex then
+        local _, r, g, b = Util.ParseHex(fur)
         local h, s, v = Util.RGBToHSV(r, g, b)
         if s > 0 and v > 0 then hsv.h = h end -- greys keep the previous hue
         hsv.s, hsv.v = s, v
-        shownHex = db.furColor
+        shownHex = fur
     end
     local hr, hg, hb = Util.HSVToRGB(hsv.h, 1, 1)
     c.squareHue:SetColorTexture(hr, hg, hb, 1)
@@ -529,9 +545,9 @@ function Options.Refresh()
     c.brightness:SetValue(Util.Round(hsv.v * 100))
     local fr, fg, fb = Util.HSVToRGB(hsv.h, hsv.s, 1)
     gradient(c.brightnessBar, "HORIZONTAL", 0, 0, 0, 1, fr, fg, fb, 1)
-    local _, r, g, b = Util.ParseHex(db.furColor)
+    local _, r, g, b = Util.ParseHex(fur)
     c.swatch:SetColorTexture(r, g, b, 1)
-    c.hex:SetText("#" .. db.furColor)
+    c.hex:SetText("#" .. fur)
 
     for _, rb in ipairs(c.styles) do rb:SetChecked(rb.value == db.variation) end
 

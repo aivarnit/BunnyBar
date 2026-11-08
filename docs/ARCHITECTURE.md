@@ -87,7 +87,12 @@ Five variations are registered in `Appearance.lua`: classic, devil, angel, drago
 2. Overlays need the same frame grid, so they would save at most half of the texture space, at the price of a third runtime layer, more textures to keep in sync, and harder previews.
 3. The client only loads the active style's textures, and transparent TGA pixels compress roughly 10× in the ZIP.
 
-**Colour:** fur pixels, including the zombie patch tone, dragon scales, the dragon's tail, the mouth and the drowsy eyelid, are fur tones in the tinted layer. Horns, halo, wings, stitches, eyes and the rest are fixed detail colours. `Config.SetStyle` switches to the new style's default fur only if the current colour is still the previous style's default, so a custom colour is kept. Style changes call `Bunny:RefreshAppearance()`, which re-shows the *current* pose from the new folder without restarting the behaviour.
+**Colour:** fur pixels, including the zombie patch tone, dragon scales, the dragon's tail, the mouth and the drowsy eyelid, are fur tones in the tinted layer. Horns, halo, wings, stitches, eyes and the rest are fixed detail colours. The fur colour is an **optional override**. `BunnyBarDB.furColor` holds a custom `"RRGGBB"`, or is `nil` for "no override". `Config.FurColor()` returns the override if there is one, otherwise the selected style's `defaultFur` from the Appearance registry, which is the only place those defaults are defined.
+
+- Switching style with no override shows the new style's colour. An override is always kept, including white, or a colour that equals some style's default.
+- **Reset Color** and `/bunny color reset` clear the override (`Config.ResetFurColor()`).
+- **Migration to schema 4:** a pre-v4 stored colour equal to that save's style default becomes `nil`; any other colour stays as an override.
+- The settings preview re-selects its sprite with `Appearance.SheetPath(Bunny.SHEETS.idle.file)` on every panel refresh, so it always shows the selected style. Its fur layer is tinted like the real bunny. It's a static frame with no animation loop. Style changes call `Bunny:RefreshAppearance()`, which re-shows the *current* pose from the new folder without restarting the behaviour.
 
 **Hats** stay a registry with only `none`; the panel shows no hat selector until there's a real choice.
 

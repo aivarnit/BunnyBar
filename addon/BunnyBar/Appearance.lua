@@ -88,10 +88,11 @@ end
 
 local DEFAULT_HEX = "F6F3FA"
 
--- Current fur colour as r, g, b (0..1).
+-- Current fur colour as r, g, b (0..1): the custom override, else the
+-- selected style's own default (Config.FurColor).
 function Appearance.FurRGB()
-    local db = ns.db
-    local hex, r, g, b = Util.ParseHex(db and db.furColor or DEFAULT_HEX)
+    local current = ns.Config and ns.Config.FurColor() or DEFAULT_HEX
+    local hex, r, g, b = Util.ParseHex(current)
     if not hex then
         local _
         _, r, g, b = Util.ParseHex(DEFAULT_HEX)

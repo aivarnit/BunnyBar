@@ -20,7 +20,7 @@ Full frame sheets per style: [classic](images/sprites-classic.png) · [devil](im
 
 **Fur colour on every style.** The fur, including the zombie's patches and the dragon's scales and tail, is tinted with your colour. Horns, halo, wings, stitches, eyes, nose and inner ears keep their own colours.
 
-Picking a style switches to that style's default fur colour, unless you've chosen your own colour, in which case your colour stays. **Reset Color** (or `/bunny color reset`) returns to the current style's default.
+Picking a style switches to that style's default fur colour, unless you've chosen your own colour, in which case your colour stays (even if it's white, or matches another style's default). **Reset Color** (or `/bunny color reset`) removes your colour, so the current style's default applies, and later style changes follow each style's own colour again. The preview next to the colour picker always shows the selected style in its current colour.
 
 Changing style never restarts what the bunny is doing: a sleeping bunny keeps sleeping in its new look.
 
