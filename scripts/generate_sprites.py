@@ -15,6 +15,19 @@ Outputs (committed to the repository):
   docs/images/sprite-preview.png                     all frames, one row per animation
   docs/images/sleep-preview.gif                      animated nap, using the in-game timings
 
+  addon/BunnyBar/Textures/bunny-ears.tga     32x32  portrait ears (32x16 frame)
+  addon/BunnyBar/Textures/bunny-icon.tga     32x32  AddOns-list icon (single layer)
+  docs/images/sprite-preview.png                     also shows colour variants + ears
+
+Every texture holds TWO layers of the same frames, stacked vertically:
+  top half    = fur only, normalised so the main fur tone is pure white; the
+                addon tints it with SetVertexColor(fur colour), so shading
+                keeps its original ratios in any colour
+  bottom half = every non-fur detail (outline, eyes, nose, inner ears, blush,
+                z glyphs), never tinted
+The two layers never overlap. With the default fur colour (#F6F3FA, the
+original fur tone) the composite reproduces the original art (within 1/255).
+
 Sheets whose frame count is not a power of two are padded with empty slots so
 every texture keeps power-of-two dimensions.
 
@@ -45,7 +58,8 @@ FRAME = 32  # sprite size in pixels
 # Palette (RGBA)
 CLEAR = (0, 0, 0, 0)
 OUTLINE = (58, 44, 66, 255)       # deep plum, softer than black
-WHITE = (255, 255, 255, 255)
+WHITE = (255, 255, 255, 255)       # eye catch-light (detail layer)
+TAIL = (250, 248, 253, 255)        # cotton tail (fur layer)
 FUR = (246, 243, 250, 255)        # main fur
 SHADE = (214, 206, 230, 255)      # belly / underside shading
 SHADE_DARK = (186, 176, 208, 255)  # deepest shade (far limbs)
@@ -159,7 +173,7 @@ def draw_bunny(
     c.ellipse(bx, by, brx + 1, bry + 1, OUTLINE)
     c.ellipse(hx, hy, hrx + 1, hry + 1, OUTLINE)
 
-    c.ellipse(tx, ty, tr, tr, WHITE)
+    c.ellipse(tx, ty, tr, tr, TAIL)
     if back_foot:
         c.ellipse(fx, fy, frx, fry, SHADE)
     c.ellipse(bx, by, brx, bry, FUR, shade=SHADE, shade_from=0.35)
@@ -424,19 +438,106 @@ def slots_for(count):
 # Encoders
 # --------------------------------------------------------------------------
 
-def strip(canvases):
-    """Concatenate frames horizontally into one RGBA row-major pixel grid,
-    padded with transparent slots to a power-of-two width."""
+# ---------------------------------------------------------------------------
+# Fur / detail layers
+# ---------------------------------------------------------------------------
+
+FUR_BASE = FUR                  # tint that reproduces the original art
+DEFAULT_FUR_HEX = "%02X%02X%02X" % FUR_BASE[:3]
+FUR_RGB = {FUR[:3], SHADE[:3], TAIL[:3]}
+
+
+def is_fur(p) -> bool:
+    return p[3] > 0 and p[:3] in FUR_RGB
+
+
+def split_layers(c: Canvas):
+    """(fur, detail) canvases. Fur is normalised by FUR_BASE so that tinting
+    with colour X gives the main fur exactly X."""
+    fur, detail = Canvas(c.w, c.h), Canvas(c.w, c.h)
+    for y in range(c.h):
+        for x in range(c.w):
+            p = c.px[y][x]
+            if p[3] == 0:
+                continue
+            if is_fur(p):
+                fur.px[y][x] = tuple(min(255, round(p[i] * 255 / FUR_BASE[i])) for i in range(3)) + (p[3],)
+            else:
+                detail.px[y][x] = p
+    return fur, detail
+
+
+def tint_composite(c: Canvas, hex_color: str) -> Canvas:
+    """What the addon draws: fur layer x tint, detail layer on top."""
+    tint = tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+    fur, detail = split_layers(c)
+    out = Canvas(c.w, c.h)
+    for y in range(c.h):
+        for x in range(c.w):
+            f, d = fur.px[y][x], detail.px[y][x]
+            if d[3]:
+                out.px[y][x] = d
+            elif f[3]:
+                out.px[y][x] = tuple(round(f[i] * tint[i] / 255) for i in range(3)) + (f[3],)
+    return out
+
+
+def strip(canvases, frame_h=FRAME):
+    """Horizontal strip of frames, padded with transparent slots to a
+    power-of-two width; returns (w, h, rows) for ONE layer."""
     slots = slots_for(len(canvases))
     w = FRAME * slots
     rows = []
-    for y in range(FRAME):
+    for y in range(frame_h):
         row = []
         for c in canvases:
             row.extend(c.px[y])
         row.extend([CLEAR] * (FRAME * (slots - len(canvases))))
         rows.append(row)
-    return w, FRAME, rows
+    return w, frame_h, rows
+
+
+def layered_strip(canvases, frame_h=FRAME):
+    """Fur layer strip on top, detail layer strip below (height 2*frame_h)."""
+    furs, details = zip(*(split_layers(c) for c in canvases))
+    w, _, fur_rows = strip(list(furs), frame_h)
+    _, _, detail_rows = strip(list(details), frame_h)
+    return w, 2 * frame_h, fur_rows + detail_rows
+
+
+# ---------------------------------------------------------------------------
+# Portrait ears
+# ---------------------------------------------------------------------------
+
+EARS_H = 16
+
+
+def portrait_ears() -> Canvas:
+    """A pair of upright bunny ears (32x16), rooted on the bottom edge so they
+    can sit on top of a round portrait. Same palette and outline style."""
+    c = Canvas(FRAME, EARS_H)
+    # (root x, root y, length, tilt): roots just below the bottom edge so the
+    # ears look attached to whatever they sit on.
+    specs = [(11.0, 17.5, 15.0, 0.24), (21.0, 17.5, 15.0, -0.24)]
+
+    def oval(cx, cy, rx, ry, angle, colour):
+        c.ellipse(cx, cy, rx, ry, colour, angle=-angle)
+
+    for bx, by, length, a in specs:
+        cx, cy = bx - math.sin(a) * length * 0.5, by - math.cos(a) * length * 0.5
+        oval(cx, cy, 4.1, length * 0.5 + 1.0, a, OUTLINE)
+    for bx, by, length, a in specs:
+        cx, cy = bx - math.sin(a) * length * 0.5, by - math.cos(a) * length * 0.5
+        oval(cx, cy, 3.1, length * 0.5, a, FUR)
+        icx, icy = bx - math.sin(a) * length * 0.45, by - math.cos(a) * length * 0.45
+        oval(icx, icy, 1.4, length * 0.33, a, PINK)
+    # Shade the outer edge of each ear slightly for depth.
+    for y in range(EARS_H):
+        for x in range(FRAME):
+            if c.px[y][x] == FUR and (x < 9 or x > 23):
+                c.px[y][x] = SHADE
+    c.outline()
+    return c
 
 
 def encode_tga(w, h, rows) -> bytes:
@@ -482,8 +583,8 @@ def blend(dst, src):
 
 
 def blit(rows, c: Canvas, x0, y0, scale):
-    for y in range(FRAME):
-        for x in range(FRAME):
+    for y in range(c.h):
+        for x in range(c.w):
             p = c.px[y][x]
             if p[3] == 0:
                 continue
@@ -501,7 +602,24 @@ def preview_rows(sheets):
         sleepy[:3] + sleepy[3:],   # getting sleepy (3) | lying down (4)
         sleep,                     # breathing (4) | ear twitch | nose twitch
         wake,                      # waking up (4)
+        colour_variants(sheets),   # fur colours + portrait ears, as rendered in game
     ]
+
+
+# Fur colours shown in the preview (default first).
+PREVIEW_COLOURS = [DEFAULT_FUR_HEX, "FFB6C1", "87CEEB", "A0522D", "3A3A40"]
+
+
+def colour_variants(sheets):
+    idle = sheets["bunny-idle"][0]
+    out = [tint_composite(idle, hx) for hx in PREVIEW_COLOURS]
+    for hx in (DEFAULT_FUR_HEX, "FFB6C1"):
+        ears = tint_composite(portrait_ears(), hx)
+        cell = Canvas()  # centre the 32x16 ears in a 32x32 cell
+        for y in range(ears.h):
+            cell.px[y + 8] = list(ears.px[y])
+        out.append(cell)
+    return out
 
 
 def preview(sheets, scale=6, pad=4) -> bytes:
@@ -638,8 +756,13 @@ def build():
     sheets = frames()
     outputs = {}
     for name, canvases in sheets.items():
-        w, h, rows = strip(canvases)
+        w, h, rows = layered_strip(canvases)
         outputs[TEXTURE_DIR / f"{name}.tga"] = encode_tga(w, h, rows)
+    w, h, rows = layered_strip([portrait_ears()], EARS_H)
+    outputs[TEXTURE_DIR / "bunny-ears.tga"] = encode_tga(w, h, rows)
+    # The TOC IconTexture shows a whole file, so it gets a plain composite.
+    w, h, rows = strip([sheets["bunny-idle"][0]])
+    outputs[TEXTURE_DIR / "bunny-icon.tga"] = encode_tga(w, h, rows)
     outputs[PREVIEW_PATH] = preview(sheets)
     outputs[GIF_PATH] = nap_gif(sheets)
     return outputs

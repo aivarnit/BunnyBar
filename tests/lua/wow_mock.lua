@@ -8,6 +8,9 @@
 
 local M = {}
 
+-- Templates the mock client pretends not to have (tests can add names).
+M.MISSING_TEMPLATES = {}
+
 M.now = 0
 M.timers = {}
 M.frames = {}
@@ -19,7 +22,7 @@ M.KNOWN_EVENTS = {
     ADDON_LOADED = true, PLAYER_LOGIN = true, PLAYER_ENTERING_WORLD = true,
     EDIT_MODE_LAYOUTS_UPDATED = true, UI_SCALE_CHANGED = true, DISPLAY_SIZE_CHANGED = true,
     PLAYER_LEVEL_UP = true, ENABLE_XP_GAIN = true, DISABLE_XP_GAIN = true,
-    UPDATE_EXPANSION_LEVEL = true,
+    UPDATE_EXPANSION_LEVEL = true, GROUP_ROSTER_UPDATE = true, PLAYER_REGEN_ENABLED = true,
 }
 
 ----------------------------------------------------------------------------
@@ -135,13 +138,87 @@ function Region:GetTexCoord()
     local c = self._texCoord
     return c[1], c[2], c[3], c[4]
 end
+function Region:SetVertexColor(r, g, b, a) self._vertex = { r, g, b, a or 1 } end
+function Region:GetVertexColor()
+    local v = self._vertex or { 1, 1, 1, 1 }
+    return v[1], v[2], v[3], v[4]
+end
+function Region:SetGradient(orient, minColor, maxColor)
+    assert(type(minColor) == "table" and type(maxColor) == "table", "SetGradient takes ColorMixins")
+    self._gradient = { orient, minColor, maxColor }
+end
 -- Font strings
-function Region:SetText(t) self._text = t end
+function Region:SetText(t)
+    self._text = t
+    if self._kind == "EditBox" then self._cursorText = t end
+end
 function Region:GetText() return self._text end
+function Region:SetJustifyH(j) self._justify = j end
+function Region:SetWidth(w) self._width = w end
+function Region:SetHeight(h) self._height = h end
+function Region:SetTextColor(r, g, b, a) self._textColor = { r, g, b, a } end
+
+-- Frame stacking / protection
+function Region:SetFrameLevel(l) self._level = l end
+function Region:GetFrameLevel() return self._level or 1 end
+function Region:GetFrameStrata() return self._strata or "MEDIUM" end
+function Region:IsProtected() return self._protected or false, false end
+
+-- Sliders: SetValue fires OnValueChanged like the client (only on change).
+function Region:SetOrientation(o) self._orientation = o end
+function Region:SetMinMaxValues(lo, hi) self._min, self._max = lo, hi end
+function Region:GetMinMaxValues() return self._min, self._max end
+function Region:SetValueStep(s) self._step = s end
+function Region:SetObeyStepOnDrag(v) self._obey = v end
+function Region:SetThumbTexture(t)
+    self._thumbFile = t
+    self._thumb = self._thumb or newRegion("Texture", self)
+end
+function Region:GetThumbTexture() return self._thumb end
+function Region:GetValue() return self._value or self._min or 0 end
+function Region:SetValue(v, userInput)
+    if self._min then v = math.max(self._min, math.min(self._max, v)) end
+    if self._value == v then return end
+    self._value = v
+    local fn = self._scripts.OnValueChanged
+    if fn then fn(self, v, userInput or false) end
+end
+
+-- Edit boxes
+function Region:SetAutoFocus(v) self._autoFocus = v end
+function Region:SetMaxLetters(n) self._maxLetters = n end
+function Region:ClearFocus()
+    if self._focus then
+        self._focus = false
+        local fn = self._scripts.OnEditFocusLost
+        if fn then fn(self) end
+    end
+end
+function Region:SetFocus() self._focus = true end
+-- Test helper: type text and press Enter.
+function Region:MockType(t)
+    self:SetFocus()
+    self._text = t
+    local fn = self._scripts.OnEnterPressed
+    if fn then fn(self) end
+end
+
+-- Check / radio buttons and buttons
+function Region:SetChecked(v) self._checked = v and true or false end
+function Region:GetChecked() return self._checked or false end
+function Region:Click()
+    if self._kind == "CheckButton" then self._checked = not self._checked end
+    local fn = self._scripts.OnClick
+    if fn then fn(self, "LeftButton") end
+end
 
 -- Frames
 function Region:SetScript(name, fn) self._scripts[name] = fn end
 function Region:HookScript(name, fn)
+    -- Textures and font strings have no scripts in the real client.
+    if self._kind == "Texture" or self._kind == "FontString" then
+        error("attempt to call method 'HookScript' (a nil value)", 2)
+    end
     self._hooks[name] = self._hooks[name] or {}
     table.insert(self._hooks[name], fn)
 end
@@ -165,9 +242,9 @@ function Region:StartMoving()
 end
 function Region:StopMovingOrSizing() self._moving = false end
 function Region:SetUserPlaced(v) self._userPlaced = v end
-function Region:CreateTexture(name, layer)
+function Region:CreateTexture(name, layer, template, sublevel)
     local t = newRegion("Texture", self)
-    t._layer = layer
+    t._layer, t._sublevel = layer, sublevel
     return t
 end
 function Region:CreateFontString(name, layer, template)
@@ -190,14 +267,23 @@ function M.install(env)
     M.UIParent = UIParent
     env.UIParent = UIParent
 
-    env.CreateFrame = function(kind, name, parent)
+    env.CreateFrame = function(kind, name, parent, template)
+        if template and M.MISSING_TEMPLATES[template] then
+            error("Couldn't find inherited node \"" .. template .. "\"", 2)
+        end
         local f = newRegion(kind, parent)
+        f._template = template
         table.insert(M.frames, f)
         if name then rawset(env, name, f) end
         return f
     end
 
     env.GetTime = function() return M.now end
+    M.cursor = { 0, 0 }
+    env.GetCursorPosition = function() return M.cursor[1], M.cursor[2] end
+    M.combat = false
+    env.InCombatLockdown = function() return M.combat end
+    env.CreateColor = function(r, g, b, a) return { r = r, g = g, b = b, a = a } end
 
     local function addTimer(delay, fn)
         local t = { at = M.now + delay, fn = fn, cancelled = false }

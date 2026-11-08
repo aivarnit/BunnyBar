@@ -36,6 +36,9 @@ def expected_entries():
     entries = {f"{ADDON_NAME}/{ADDON_NAME}.toc"}
     entries |= {f"{ADDON_NAME}/{f.replace(chr(92), '/')}" for f in files}
     entries |= {f"{ADDON_NAME}/Textures/{name}" for name in texture_references()}
+    icon = meta.get("IconTexture", "")
+    if icon:
+        entries.add(f"{ADDON_NAME}/Textures/{icon.replace(chr(92), '/').split('/')[-1]}")
     entries.add(f"{ADDON_NAME}/LICENSE.txt")
     return entries
 

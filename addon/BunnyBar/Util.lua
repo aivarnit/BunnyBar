@@ -109,3 +109,105 @@ function Util.ParseNumber(text, spec)
     end
     return value
 end
+
+----------------------------------------------------------------------------
+-- Colours
+----------------------------------------------------------------------------
+
+-- Parse "#RRGGBB" / "RRGGBB" (case-insensitive, surrounding spaces allowed).
+-- Returns the canonical upper-case "RRGGBB" and r, g, b in 0..1, or nil and
+-- an error message.
+function Util.ParseHex(text)
+    if type(text) ~= "string" then return nil, "Enter a colour like #FFB6C1." end
+    local hex = text:match("^%s*#?(%x%x%x%x%x%x)%s*$")
+    if not hex then
+        return nil, ("'%s' is not a colour. Use six hex digits, e.g. #FFB6C1."):format(text)
+    end
+    hex = hex:upper()
+    local r = tonumber(hex:sub(1, 2), 16) / 255
+    local g = tonumber(hex:sub(3, 4), 16) / 255
+    local b = tonumber(hex:sub(5, 6), 16) / 255
+    return hex, r, g, b
+end
+
+-- r, g, b in 0..1 -> "RRGGBB"
+function Util.RGBToHex(r, g, b)
+    local function byte(v) return Util.Clamp(floor(v * 255 + 0.5), 0, 255) end
+    return ("%02X%02X%02X"):format(byte(r), byte(g), byte(b))
+end
+
+-- r, g, b in 0..1 -> h in [0, 360), s, v in 0..1
+function Util.RGBToHSV(r, g, b)
+    local hi, lo = max(r, g, b), min(r, g, b)
+    local d = hi - lo
+    local h = 0
+    if d > 0 then
+        if hi == r then
+            h = 60 * (((g - b) / d) % 6)
+        elseif hi == g then
+            h = 60 * ((b - r) / d + 2)
+        else
+            h = 60 * ((r - g) / d + 4)
+        end
+    end
+    local s = hi > 0 and d / hi or 0
+    return h % 360, s, hi
+end
+
+-- h in degrees (any value, wrapped), s, v in 0..1 -> r, g, b in 0..1
+function Util.HSVToRGB(h, s, v)
+    h = (h % 360) / 60
+    local i = floor(h)
+    local f = h - i
+    local p, q, t = v * (1 - s), v * (1 - s * f), v * (1 - s * (1 - f))
+    if i == 0 then return v, t, p
+    elseif i == 1 then return q, v, p
+    elseif i == 2 then return p, v, t
+    elseif i == 3 then return p, q, v
+    elseif i == 4 then return t, p, v
+    end
+    return v, p, q
+end
+
+----------------------------------------------------------------------------
+-- Safe reads of Blizzard frames
+----------------------------------------------------------------------------
+
+-- Midnight-era clients can return "secret" values that addons may display
+-- but not compare or do arithmetic with.
+function Util.IsSecret(v)
+    return issecretvalue ~= nil and issecretvalue(v) and true or false
+end
+
+function Util.IsUsableNumber(v)
+    if Util.IsSecret(v) then return false end
+    return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
+end
+
+-- True only if f:IsVisible() succeeds and returns a real `true`.
+function Util.IsShown(f)
+    if type(f) ~= "table" or type(f.IsVisible) ~= "function" then return false end
+    local ok, visible = pcall(f.IsVisible, f)
+    return ok and not Util.IsSecret(visible) and visible == true
+end
+
+local function readRect(f)
+    return f:GetLeft(), f:GetRight(), f:GetBottom(), f:GetTop(), f:GetEffectiveScale()
+end
+
+-- Rectangle of a region in UIParent units, or nil if unavailable.
+function Util.ReadRect(f)
+    if type(f) ~= "table" then return nil end
+    local ok, l, r, b, t, scale = pcall(readRect, f)
+    if not ok then return nil end
+    for _, v in ipairs({ l, r, b, t, scale }) do
+        if not Util.IsUsableNumber(v) then return nil end
+    end
+    if scale <= 0 or r <= l or t <= b then return nil end
+    local k = scale / UIParent:GetEffectiveScale()
+    return l * k, r * k, b * k, t * k
+end
+
+function Util.InCombat()
+    return InCombatLockdown ~= nil and InCombatLockdown() and true or false
+end

@@ -4,12 +4,15 @@
 ## Author: Anthony Varnit
 ## Version: 0.1.0
 ## SavedVariables: BunnyBarDB
-## IconTexture: Interface\AddOns\BunnyBar\Textures\bunny-land.tga
+## IconTexture: Interface\AddOns\BunnyBar\Textures\bunny-icon.tga
 ## X-License: MIT
 ## X-Website: https://github.com/aivarnit/BunnyBar
 
 Util.lua
 Config.lua
+Appearance.lua
 Placement.lua
 Animation.lua
+Ears.lua
+Options.lua
 Core.lua

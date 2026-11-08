@@ -71,7 +71,11 @@ local function boot(saved, opts)
         "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBar5", "MultiBar6", "MultiBar7",
         "OverrideActionBar", "MainStatusTrackingBarContainer", "SecondaryStatusTrackingBarContainer",
         "StatusTrackingBarManager", "MainMenuExpBar", "ReputationWatchBar", "EditModeManagerFrame",
-        "SettingsPanel", "InterfaceOptionsFrame", "issecretvalue", "SLASH_BUNNYBAR1",
+        "SettingsPanel", "InterfaceOptionsFrame", "Settings", "InterfaceOptions_AddCategory",
+        "InterfaceOptionsFrame_OpenToCategory", "PlayerFrame", "PlayerPortrait", "PartyFrame",
+        "PartyMemberFrame1", "PartyMemberFrame2", "PartyMemberFrame3", "PartyMemberFrame4",
+        "PartyMemberFrame1Portrait", "PartyMemberFrame2Portrait", "PartyMemberFrame3Portrait",
+        "PartyMemberFrame4Portrait", "issecretvalue", "SLASH_BUNNYBAR1",
         "SLASH_BUNNYBAR2", "C_AddOns", "C_AddOnProfiler", "Enum", "UpdateAddOnMemoryUsage",
         "GetAddOnMemoryUsage" }) do
         _G[name] = nil
@@ -192,7 +196,7 @@ test("defaults match the specification", function()
     local db = BunnyBarDB
     eq(ns2.db, db, "ns.db is the SavedVariables table")
     eq(db.shown, true); eq(db.locked, true)
-    eq(db.size, 32); eq(db.speed, 1.0); eq(db.interval, 8)
+    eq(db.size, 64, "new installs default to Regular (64)"); eq(db.speed, 1.0); eq(db.interval, 8)
     eq(db.trackWidth, 480); eq(db.hopHeight, 16); eq(db.hopDuration, 0.4)
     eq(db.point, nil, "auto position by default")
 end)
@@ -230,18 +234,18 @@ test("bunny spawns centred, idle, crisp, with no per-frame work", function()
     boot(nil)
     local f = BunnyBarFrame
     truthy(f:IsVisible(), "frame visible")
-    eq(f:GetWidth(), 480); eq(f:GetHeight(), 48)
+    eq(f:GetWidth(), 480); eq(f:GetHeight(), 64 + 16)
     eq(f._strata, "LOW"); eq(f:IsMouseEnabled(), false, "click-through while locked")
     local s = ns.Bunny:GetDebugState()
-    eq(s.state, "idle"); eq(s.x, 224, "centre of track"); eq(s.y, 0)
+    eq(s.state, "idle"); eq(s.x, (480 - 64) / 2, "centre of track"); eq(s.y, 0)
     eq(s.onUpdate, false, "no OnUpdate while idle")
     -- Sprite texture uses nearest-neighbour filtering.
     local sprite
-    for _, c in ipairs(f._children) do if c._texture then sprite = c end end
+    for _, c in ipairs(f._children) do if c._texture and not sprite then sprite = c end end
     truthy(sprite, "sprite texture")
     eq(sprite._filter, "NEAREST")
     truthy(sprite._texture:find("Interface\\AddOns\\BunnyBar\\Textures\\bunny%-idle%.tga"), sprite._texture)
-    eq(sprite:GetWidth(), 32)
+    eq(sprite:GetWidth(), 64)
 end)
 
 test("ten simulated minutes: bounded, smooth, flips, rests, mostly idle", function()
@@ -282,8 +286,10 @@ test("ten simulated minutes: bounded, smooth, flips, rests, mostly idle", functi
     truthy(s.journeys > 20, "journeys " .. s.journeys)
     truthy(s.naps >= 1, "expected at least one nap")
     truthy(flips >= 5, "expected direction flips, got " .. flips)
-    -- 48 px per 0.4 s hop at 60 fps = 2 px per frame; no teleporting.
-    truthy(maxDx <= 2.5, "per-frame movement too large: " .. maxDx)
+    -- max hop distance (1.5 x size) over 0.4 s at 60 fps, plus rounding;
+    -- e.g. 96 px per hop at size 64 = 4 px per frame. No teleporting.
+    local perFrame = math.max(8, db.size * 1.5) / (db.hopDuration * 60) + 0.5
+    truthy(maxDx <= perFrame, "per-frame movement too large: " .. maxDx)
     truthy(minIdle >= 4 - 0.05, "idle wait shorter than interval*0.5: " .. minIdle)
     local fraction = updateFrames / frames
     truthy(fraction < 0.15, ("OnUpdate active %.1f%% of frames"):format(fraction * 100))
@@ -298,7 +304,7 @@ test("sprite mirrors when facing left", function()
     math.randomseed(7)
     local ns2 = boot(nil)
     local sprite
-    for _, c in ipairs(BunnyBarFrame._children) do if c._texture then sprite = c end end
+    for _, c in ipairs(BunnyBarFrame._children) do if c._texture and not sprite then sprite = c end end
     local sawLeft, sawRight = false, false
     mock.advance(300, 1 / 30, function()
         local s = ns2.Bunny:GetDebugState()
@@ -442,7 +448,7 @@ end)
 test("texture coordinates address padded sheets by slot", function()
     local ns2 = bootNap(5)
     local sprite
-    for _, c in ipairs(BunnyBarFrame._children) do if c._texture then sprite = c end end
+    for _, c in ipairs(BunnyBarFrame._children) do if c._texture and not sprite then sprite = c end end
     advanceUntil(ns2, function(s) return s.pose == "liedown4" end)
     truthy(sprite._texture:find("bunny%-sleepy%.tga"), sprite._texture)
     local l, r = sprite:GetTexCoord()
@@ -685,8 +691,8 @@ test("/bunny reset restores defaults and auto position", function()
     local ns2 = boot({ size = 64, speed = 2, point = "BOTTOM", relativePoint = "BOTTOM", x = 5, y = 500, locked = false })
     slash("reset")
     local db = BunnyBarDB
-    eq(db.size, 32); eq(db.speed, 1); eq(db.point, nil); eq(db.locked, true)
-    eq(ns2.Bunny:GetDebugState().x, 224)
+    eq(db.size, 64); eq(db.speed, 1); eq(db.point, nil); eq(db.locked, true)
+    eq(ns2.Bunny:GetDebugState().x, (480 - 64) / 2)
     local _, _, _, x, y = BunnyBarFrame:GetPoint(1)
     eq(x, 0); eq(y, 100, "fallback offset when no action bar is found")
 end)
@@ -1277,6 +1283,527 @@ test("unknown layout events on older clients do not break loading", function()
     boot(nil, { setup = function() mock.KNOWN_EVENTS.EDIT_MODE_LAYOUTS_UPDATED = nil end })
     truthy(BunnyBarFrame:IsVisible())
     mock.KNOWN_EVENTS.EDIT_MODE_LAYOUTS_UPDATED = true
+end)
+
+----------------------------------------------------------------------------
+-- v0.2: colour maths
+----------------------------------------------------------------------------
+
+io.write("Colour\n")
+
+test("hex parsing accepts #RRGGBB / RRGGBB in any case", function()
+    local U = ns.Util
+    local cases = { ["#FFFFFF"] = { "FFFFFF", 1, 1, 1 }, ["#FFB6C1"] = { "FFB6C1", 1, 182 / 255, 193 / 255 },
+        ["#87ceeb"] = { "87CEEB", 135 / 255, 206 / 255, 235 / 255 }, ["000000"] = { "000000", 0, 0, 0 },
+        ["  #a0522d "] = { "A0522D", 160 / 255, 82 / 255, 45 / 255 } }
+    for input, want in pairs(cases) do
+        local hex, r, g, b = U.ParseHex(input)
+        eq(hex, want[1], input); near(r, want[2]); near(g, want[3]); near(b, want[4])
+    end
+end)
+
+test("invalid hex input is rejected with a message", function()
+    for _, bad in ipairs({ "", "#FFF", "FFF", "#FFFFFFF", "#GGGGGG", "pink", "# FFFFFF", "0xFFFFFF", "#12345" }) do
+        local hex, err = ns.Util.ParseHex(bad)
+        eq(hex, nil, bad); truthy(type(err) == "string" and err:find("hex"), bad)
+    end
+    eq((ns.Util.ParseHex(nil)), nil)
+    eq((ns.Util.ParseHex(42)), nil)
+end)
+
+test("RGB <-> HSV round-trips and known values", function()
+    local U = ns.Util
+    local h, s, v = U.RGBToHSV(1, 0, 0); near(h, 0); near(s, 1); near(v, 1)
+    h, s, v = U.RGBToHSV(0, 1, 0); near(h, 120)
+    h, s, v = U.RGBToHSV(0, 0, 1); near(h, 240)
+    h, s, v = U.RGBToHSV(0.5, 0.5, 0.5); near(s, 0); near(v, 0.5)
+    for r = 0, 255, 15 do for g = 0, 255, 51 do for b = 0, 255, 85 do
+        local hex = U.RGBToHex(r / 255, g / 255, b / 255)
+        eq(U.RGBToHex(U.HSVToRGB(U.RGBToHSV(r / 255, g / 255, b / 255))), hex, hex)
+    end end end
+    eq(U.RGBToHex(U.HSVToRGB(360 + 120, 1, 1)), "00FF00", "hue wraps")
+end)
+
+----------------------------------------------------------------------------
+-- v0.2: SavedVariables migration
+----------------------------------------------------------------------------
+
+io.write("Migration\n")
+
+test("v0.1 settings are preserved, new keys get defaults", function()
+    local old = { schema = 1, shown = false, locked = false, size = 32, speed = 2, interval = 10,
+        trackWidth = 600, hopHeight = 20, hopDuration = 0.5, sleepChance = 0.3,
+        point = "BOTTOM", relativePoint = "BOTTOM", x = 15, y = 300 }
+    boot(old)
+    local db = BunnyBarDB
+    eq(db.schema, 2)
+    for k, v in pairs(old) do if k ~= "schema" then eq(db[k], v, k) end end
+    eq(db.furColor, "F6F3FA"); eq(db.variation, "classic"); eq(db.hat, "none")
+    eq(db.earsPlayer, true); eq(db.earsParty, true)
+end)
+
+test("v0.1 data with a broken size falls back to the old default 32", function()
+    boot({ schema = 1, size = "huge", speed = 1 })
+    eq(BunnyBarDB.size, 32)
+    boot({ speed = 1 }) -- pre-schema data
+    eq(BunnyBarDB.size, 32)
+    boot(nil)
+    eq(BunnyBarDB.size, 64, "fresh install")
+    boot({ schema = 2, size = 48 })
+    eq(BunnyBarDB.size, 48, "custom size kept")
+end)
+
+test("invalid appearance values are repaired, valid ones canonicalised", function()
+    boot({ schema = 2, furColor = "#ffb6c1", variation = "fancy", hat = 7, earsPlayer = "yes" })
+    local db = BunnyBarDB
+    eq(db.furColor, "FFB6C1"); eq(db.variation, "classic"); eq(db.hat, "none"); eq(db.earsPlayer, true)
+    boot({ schema = 2, furColor = "not a colour" })
+    eq(BunnyBarDB.furColor, "F6F3FA")
+end)
+
+test("appearance registry: classic + none only", function()
+    local ns2 = boot(nil)
+    local A = ns2.Appearance
+    truthy(A.IsValid("variation", "classic")); truthy(A.IsValid("hat", "none"))
+    eq(A.IsValid("variation", "fancy"), false); eq(A.IsValid("hat", nil), false)
+    eq(#A.List("variation"), 1); eq(#A.List("hat"), 1)
+    truthy(A.SheetPath("bunny-idle.tga"):find("BunnyBar\\Textures\\bunny-idle.tga", 1, true))
+end)
+
+----------------------------------------------------------------------------
+-- v0.2: colour on the sprite
+----------------------------------------------------------------------------
+
+io.write("Recolouring\n")
+
+local function bunnyLayers()
+    local fur, detail
+    for _, ch in ipairs(BunnyBarFrame._children) do
+        if ch._texture then
+            if not fur then fur = ch elseif not detail then detail = ch end
+        end
+    end
+    return fur, detail
+end
+
+test("fur layer is tinted, detail layer never is, both share frames", function()
+    local ns2 = boot(nil)
+    local fur, detail = bunnyLayers()
+    eq(fur._sublevel, 0); eq(detail._sublevel, 1)
+    local r, g, b = fur:GetVertexColor()
+    near(r, 0xF6 / 255); near(g, 0xF3 / 255); near(b, 0xFA / 255)
+    eq(slash("color #87CEEB"), true)
+    r, g, b = fur:GetVertexColor()
+    near(r, 0x87 / 255); near(g, 0xCE / 255); near(b, 0xEB / 255)
+    eq(detail._vertex, nil, "detail layer untinted")
+    eq(fur._filter, "NEAREST"); eq(detail._filter, "NEAREST")
+    local fl, fr, ft, fb = fur:GetTexCoord()
+    local dl, dr, dt, db_ = detail:GetTexCoord()
+    eq(fl, dl); eq(fr, dr); eq(ft, 0); eq(fb, 0.5); eq(dt, 0.5); eq(db_, 1)
+end)
+
+test("colour stays applied through every animation and sheet change", function()
+    math.randomseed(5)
+    local ns2 = boot({ schema = 2, sleepChance = 0.5, furColor = "FFB6C1" })
+    local fur, detail = bunnyLayers()
+    local sheets, poses = {}, {}
+    mock.advance(400, 1 / 30, function()
+        local r, g, b = fur:GetVertexColor()
+        near(r, 1); near(g, 0xB6 / 255); near(b, 0xC1 / 255)
+        eq(fur._texture, detail._texture, "layers show the same sheet")
+        sheets[fur._texture] = true
+        poses[ns2.Bunny:GetDebugState().pose] = true
+    end)
+    local n = 0
+    for _ in pairs(sheets) do n = n + 1 end
+    eq(n, 6, "all six sheets shown")
+    for _, p in ipairs({ "blink", "jump", "land", "sleep2", "wake3", "drowsy2" }) do truthy(poses[p], p) end
+end)
+
+test("/bunny color: validation, reset and query", function()
+    boot(nil)
+    eq(slash("color pink"), false)
+    truthy(lastChat():find("not a colour"))
+    eq(BunnyBarDB.furColor, "F6F3FA", "unchanged after bad input")
+    eq(slash("color ffb6c1"), true); eq(BunnyBarDB.furColor, "FFB6C1")
+    eq(slash("color"), true); truthy(lastChat():find("#FFB6C1"))
+    eq(slash("color reset"), true); eq(BunnyBarDB.furColor, "F6F3FA")
+end)
+
+----------------------------------------------------------------------------
+-- v0.2: Settings panel
+----------------------------------------------------------------------------
+
+io.write("Options panel\n")
+
+local function settingsAPI(rec)
+    return function()
+        Settings = {
+            RegisterCanvasLayoutCategory = function(frame, name)
+                local cat = { name = name, frame = frame, ID = 4242 }
+                function cat:GetID() return self.ID end
+                rec.category = cat
+                return cat
+            end,
+            RegisterAddOnCategory = function(cat) rec.registered = cat end,
+            OpenToCategory = function(id) rec.opened = id; rec.category.frame:Show() end,
+        }
+        if rec.extra then rec.extra() end
+    end
+end
+
+local function bootPanel(saved, extra)
+    local rec = { extra = extra }
+    local ns2 = boot(saved, { setup = settingsAPI(rec) })
+    eq(slash("options"), true)
+    return ns2, ns2.Options.controls, rec
+end
+
+test("registers an AddOns category and /bunny options opens it", function()
+    local ns2, c, rec = bootPanel(nil)
+    eq(ns2.Options.mode, "settings")
+    eq(rec.category.name, "BunnyBar"); eq(rec.registered, rec.category)
+    eq(rec.opened, 4242)
+    truthy(ns2.Options.IsBuilt(), "built lazily on first show")
+    eq(c.hex:GetText(), "#F6F3FA")
+end)
+
+test("panel is not built until it is shown", function()
+    local rec = {}
+    local ns2 = boot(nil, { setup = settingsAPI(rec) })
+    eq(ns2.Options.IsBuilt(), false)
+end)
+
+test("legacy InterfaceOptions fallback", function()
+    local opened = 0
+    local ns2 = boot(nil, { setup = function()
+        InterfaceOptions_AddCategory = function(panel) panel._legacy = true end
+        InterfaceOptionsFrame_OpenToCategory = function(panel) opened = opened + 1; panel:Show() end
+    end })
+    eq(ns2.Options.mode, "legacy")
+    eq(slash("options"), true)
+    eq(opened, 2); truthy(ns2.Options.IsBuilt())
+end)
+
+test("no settings API: /bunny options explains instead of failing", function()
+    local ns2 = boot(nil)
+    eq(ns2.Options.mode, "none")
+    eq(slash("options"), false)
+    truthy(lastChat():find("isn't available"), lastChat())
+end)
+
+test("a failing Settings API falls back safely", function()
+    local ns2 = boot(nil, { setup = function()
+        Settings = { RegisterCanvasLayoutCategory = function() error("blocked") end,
+                     RegisterAddOnCategory = function() end }
+    end })
+    eq(ns2.Options.mode, "none")
+end)
+
+test("/bunny options in combat opens after combat", function()
+    local rec = {}
+    local ns2 = boot(nil, { setup = settingsAPI(rec) })
+    mock.combat = true
+    eq(slash("options"), true)
+    eq(rec.opened, nil); truthy(lastChat():find("when combat ends"))
+    mock.combat = false
+    mock.fire("PLAYER_REGEN_ENABLED")
+    eq(rec.opened, 4242)
+end)
+
+test("missing widget templates degrade to plain widgets", function()
+    for _, t in ipairs({ "UIRadioButtonTemplate", "UICheckButtonTemplate", "InputBoxTemplate", "UIPanelButtonTemplate" }) do
+        mock.MISSING_TEMPLATES[t] = true
+    end
+    local ns2, c = bootPanel(nil)
+    truthy(ns2.Options.IsBuilt()); eq(c.hex._template, nil); eq(#c.sizes, 4)
+    mock.MISSING_TEMPLATES = {}
+end)
+
+test("hex box, sliders, square, swatch and bunny stay in sync", function()
+    local ns2, c = bootPanel(nil)
+    local fur = bunnyLayers()
+    c.hex:MockType("#FF0000")
+    eq(BunnyBarDB.furColor, "FF0000"); eq(c.hex:GetText(), "#FF0000")
+    eq(c.hue:GetValue(), 0); eq(c.brightness:GetValue(), 100)
+    local _, _, _, mx, my = c.marker:GetPoint(1)
+    near(mx, 150); near(my, 150)
+    local r, g, b = fur:GetVertexColor(); near(r, 1); near(g, 0); near(b, 0)
+    eq(c.swatch._color[1], 1)
+
+    c.hue:SetValue(120, true) -- user drags hue
+    eq(BunnyBarDB.furColor, "00FF00"); eq(c.hex:GetText(), "#00FF00")
+    c.brightness:SetValue(50, true) -- user drags brightness
+    eq(BunnyBarDB.furColor, "008000"); eq(c.hue:GetValue(), 120)
+    _, _, _, mx, my = c.marker:GetPoint(1)
+    near(my, 75, 1e-6, "square marker follows the brightness slider")
+
+    -- Drag on the saturation/brightness square: OnUpdate only while held.
+    c.square:SetMockRect(100, 100, 150, 150)
+    mock.cursor[1], mock.cursor[2] = 175, 250 -- s = 0.5, v = 1
+    c.square._scripts.OnMouseDown(c.square)
+    truthy(c.square:GetScript("OnUpdate"), "tracking while held")
+    eq(BunnyBarDB.furColor, "80FF80")
+    eq(c.brightness:GetValue(), 100, "brightness slider follows the square")
+    mock.cursor[1], mock.cursor[2] = 100, 100 -- s = 0, v = 0
+    mock.advance(1 / 60)
+    eq(BunnyBarDB.furColor, "000000")
+    c.square._scripts.OnMouseUp(c.square)
+    eq(c.square:GetScript("OnUpdate"), nil, "no OnUpdate after release")
+
+    -- A grey keeps the hue the user chose.
+    eq(slash("color #808080"), true)
+    eq(c.hue:GetValue(), 120); eq(c.hex:GetText(), "#808080")
+    -- Slash command -> panel.
+    eq(slash("color #87CEEB"), true)
+    eq(c.hex:GetText(), "#87CEEB"); eq(c.hue:GetValue(), 197)
+end)
+
+test("invalid hex in the panel shows an error and keeps the colour", function()
+    local ns2, c = bootPanel({ schema = 2, furColor = "FFB6C1" })
+    c.hex:MockType("#GGGGGG")
+    eq(BunnyBarDB.furColor, "FFB6C1")
+    truthy(c.error:IsShown()); truthy(c.error:GetText():find("not a colour"))
+    eq(c.hex:GetText(), "#FFB6C1", "box reverts")
+    c.hex:MockType("#87CEEB")
+    eq(c.error:IsShown(), false)
+    c.reset:Click()
+    eq(BunnyBarDB.furColor, "F6F3FA"); eq(c.hex:GetText(), "#F6F3FA")
+end)
+
+test("size presets: radios, custom sizes, slash sync", function()
+    local ns2, c = bootPanel({ schema = 2, size = 32 })
+    local function checked()
+        local out = {}
+        for i, rb in ipairs(c.sizes) do if rb:GetChecked() then out[#out + 1] = i end end
+        return table.concat(out, ",")
+    end
+    eq(checked(), "2", "Small for an existing 32 user")
+    eq(c.customSize:IsShown(), false)
+    c.sizes[4]:Click()
+    eq(BunnyBarDB.size, 128); eq(checked(), "4")
+    eq(bunnyLayers():GetWidth(), 128, "applies immediately")
+    eq(slash("size 48"), true)
+    truthy(lastChat():find("custom size"))
+    eq(BunnyBarDB.size, 48, "custom size kept, not snapped to a preset")
+    eq(checked(), ""); truthy(c.customSize:IsShown()); truthy(c.customSize:GetText():find("48"))
+    eq(slash("size 16"), true)
+    eq(checked(), "1"); eq(c.customSize:IsShown(), false)
+    c.sizes[3]:Click()
+    eq(BunnyBarDB.size, 64)
+end)
+
+test("portrait checkboxes and /bunny ears stay in sync", function()
+    local ns2, c = bootPanel(nil)
+    eq(c.ears.earsPlayer:GetChecked(), true); eq(c.ears.earsParty:GetChecked(), true)
+    c.ears.earsParty:Click()
+    eq(BunnyBarDB.earsParty, false)
+    eq(slash("ears player off"), true)
+    eq(BunnyBarDB.earsPlayer, false); eq(c.ears.earsPlayer:GetChecked(), false)
+    eq(slash("ears party on"), true); eq(c.ears.earsParty:GetChecked(), true)
+    eq(slash("ears party maybe"), false)
+end)
+
+test("/bunny reset restores everything and updates the open panel", function()
+    local ns2, c = bootPanel({ schema = 2, size = 128, furColor = "000000", earsPlayer = false })
+    slash("reset")
+    eq(BunnyBarDB.size, 64); eq(BunnyBarDB.furColor, "F6F3FA"); eq(BunnyBarDB.earsPlayer, true)
+    eq(c.hex:GetText(), "#F6F3FA"); eq(c.sizes[3]:GetChecked(), true)
+    eq(c.ears.earsPlayer:GetChecked(), true)
+    local r = bunnyLayers():GetVertexColor(); near(r, 0xF6 / 255)
+end)
+
+test("styles section is informational only (no fake selectors)", function()
+    local ns2, c = bootPanel(nil)
+    eq(c.styles._kind, "FontString")
+    truthy(c.styles:GetText():find("Classic")); truthy(c.styles:GetText():find("None"))
+end)
+
+----------------------------------------------------------------------------
+-- v0.2: portrait ears
+----------------------------------------------------------------------------
+
+io.write("Portrait ears\n")
+
+-- Modern frames: PlayerFrame.PlayerFrameContainer.PlayerPortrait and
+-- PartyFrame.MemberFrameN.Portrait. Portrait rect: (l, b, size, size).
+local function mkPlayer(l, b, size)
+    local pf = CreateFrame("Button", "PlayerFrame", UIParent)
+    pf:SetMockRect(l - 20, b - 20, 230, size + 40)
+    pf._strata, pf._level = "LOW", 5
+    pf.PlayerFrameContainer = CreateFrame("Frame", nil, pf)
+    local p = pf.PlayerFrameContainer:CreateTexture(nil, "BACKGROUND")
+    p:SetMockRect(l, b, size, size)
+    pf.PlayerFrameContainer.PlayerPortrait = p
+    return pf
+end
+
+local function mkParty(shown)
+    local party = CreateFrame("Frame", "PartyFrame", UIParent)
+    for i = 1, 4 do
+        local m = CreateFrame("Button", nil, party)
+        m:SetMockRect(40, 700 - i * 60, 120, 50)
+        m.Portrait = m:CreateTexture(nil, "BACKGROUND")
+        m.Portrait:SetMockRect(40, 700 - i * 60, 40, 40)
+        if i > shown then m:Hide() end
+        party["MemberFrame" .. i] = m
+    end
+    return party
+end
+
+local function ears(ns2) return (ns2.Ears.GetState()) end
+
+test("player ears sit centred on top of the portrait, scaled to it", function()
+    local ns2 = boot(nil, { setup = function() mkPlayer(100, 900, 60) end })
+    local e = ears(ns2).player
+    eq(e.shown, true)
+    -- width 0.8 x 60 = 48, height 24, overlapping the portrait by 25 %.
+    near(e.rect[1], 130); near(e.rect[2], 960 - 6); near(e.rect[3], 48); near(e.rect[4], 24)
+    local o = e.overlay
+    eq(o._parent, UIParent, "parented to UIParent, not the unit frame")
+    local _, rel = o:GetPoint(1)
+    eq(rel, UIParent, "anchored to UIParent, never to Blizzard frames")
+    eq(o:IsMouseEnabled(), false, "click-through")
+    eq(o._strata, "LOW"); eq(o._level, 15, "drawn above the unit frame")
+    eq(#PlayerFrame._hooks.OnShow, 1, "post-hook only")
+    eq(PlayerFrame:GetScript("OnShow"), nil, "Blizzard scripts untouched")
+end)
+
+test("ears follow portrait visibility and the settings", function()
+    local ns2 = boot(nil, { setup = function() mkPlayer(100, 900, 60) end })
+    PlayerFrame:Hide()
+    mock.advance(0.15)
+    eq(ears(ns2).player.shown, false); eq(ears(ns2).player.reason, "hidden")
+    PlayerFrame:Show()
+    mock.advance(0.15)
+    eq(ears(ns2).player.shown, true)
+    slash("ears player off")
+    eq(ears(ns2).player.shown, false, "immediately")
+    slash("ears player on")
+    eq(ears(ns2).player.shown, true)
+end)
+
+test("party ears: joining, leaving and re-sorting", function()
+    local ns2 = boot(nil, { setup = function() mkParty(2) end })
+    local st = ears(ns2)
+    eq(st.party1.shown, true); eq(st.party2.shown, true); eq(st.party3.shown, false)
+    eq(st.player.reason, "missing")
+    -- A third member joins.
+    PartyFrame.MemberFrame3:Show()
+    mock.fire("GROUP_ROSTER_UPDATE")
+    mock.advance(0.15)
+    eq(ears(ns2).party3.shown, true)
+    -- Member 2 leaves.
+    PartyFrame.MemberFrame2:Hide()
+    mock.advance(0.15)
+    eq(ears(ns2).party2.shown, false)
+    -- Frames re-sorted (positions change without show/hide).
+    PartyFrame.MemberFrame1.Portrait:SetMockRect(40, 400, 40, 40)
+    mock.fire("GROUP_ROSTER_UPDATE")
+    mock.advance(0.15)
+    near(ears(ns2).party1.rect[1], 60); near(ears(ns2).party1.rect[2], 440 - 4)
+    slash("ears party off")
+    st = ears(ns2)
+    eq(st.party1.shown, false); eq(st.party3.shown, false)
+end)
+
+test("legacy portrait globals are supported", function()
+    local ns2 = boot(nil, { setup = function()
+        local pf = CreateFrame("Button", "PlayerFrame", UIParent)
+        local p = pf:CreateTexture(nil, "BACKGROUND")
+        p:SetMockRect(50, 950, 64, 64)
+        PlayerPortrait = p
+        local m = CreateFrame("Button", "PartyMemberFrame1", UIParent)
+        local mp = m:CreateTexture(nil, "BACKGROUND")
+        mp:SetMockRect(30, 700, 37, 37)
+        PartyMemberFrame1Portrait = mp
+    end })
+    local st = ears(ns2)
+    eq(st.player.shown, true); eq(st.party1.shown, true); eq(st.party2.reason, "missing")
+end)
+
+test("missing portrait frames: nothing created, nothing breaks", function()
+    local ns2 = boot(nil)
+    for key, e in pairs(ears(ns2)) do
+        eq(e.shown, false, key); eq(e.reason, "missing", key); eq(e.overlay, nil, key)
+    end
+    mock.fire("GROUP_ROSTER_UPDATE"); mock.advance(1)
+end)
+
+test("invalid portrait geometry hides the ears", function()
+    local SECRET = {}
+    local ns2 = boot(nil, { setup = function()
+        issecretvalue = function(v) return v == SECRET end
+        mkPlayer(100, 900, 60)
+        local p = PlayerFrame.PlayerFrameContainer.PlayerPortrait
+        function p:GetTop() return SECRET end
+    end })
+    eq(ears(ns2).player.shown, false); eq(ears(ns2).player.reason, "no geometry")
+end)
+
+test("UI scale and Edit Mode moves are followed", function()
+    local ns2 = boot(nil, { setup = function() mkPlayer(100, 900, 60) end })
+    PlayerFrame.PlayerFrameContainer.PlayerPortrait:SetMockRect(300, 500, 60, 60)
+    mock.fire("EDIT_MODE_LAYOUTS_UPDATED")
+    mock.advance(0.15)
+    near(ears(ns2).player.rect[1], 330); near(ears(ns2).player.rect[2], 554)
+    -- UI scale 0.8 with the portrait at effective scale 1.0.
+    UIParent._scale = 0.8
+    PlayerFrame.PlayerFrameContainer.PlayerPortrait._scale = 1.0
+    mock.fire("UI_SCALE_CHANGED")
+    mock.advance(0.15)
+    near(ears(ns2).player.rect[3], 60, 1e-6, "48 / 0.8")
+    UIParent._scale = 1
+end)
+
+test("combat: hooks wait for combat end; protected overlays are deferred", function()
+    mock.combat = false
+    local ns2 = boot(nil, { setup = function()
+        mkPlayer(100, 900, 60)
+        mock.combat = true -- /reload in combat
+    end })
+    local _, deferred, hooksPending = ns2.Ears.GetState()
+    eq(hooksPending, true, "no hooks installed in combat")
+    eq(PlayerFrame._hooks.OnShow, nil)
+    eq(ears(ns2).player.shown, true, "unprotected overlay still updates in combat")
+    -- If our overlay were ever protected, changes wait for combat to end.
+    local o = ears(ns2).player.overlay
+    o._protected = true
+    PlayerFrame.PlayerFrameContainer.PlayerPortrait:SetMockRect(200, 800, 60, 60)
+    ns2.Ears.Refresh()
+    _, deferred = ns2.Ears.GetState()
+    eq(deferred, true); near(ears(ns2).player.rect[1], 130, 1e-6, "not moved in combat")
+    mock.combat = false
+    o._protected = false
+    mock.fire("PLAYER_REGEN_ENABLED")
+    mock.advance(0.15)
+    _, deferred, hooksPending = ns2.Ears.GetState()
+    eq(hooksPending, false); eq(deferred, false)
+    eq(#PlayerFrame._hooks.OnShow, 1)
+    near(ears(ns2).player.rect[1], 230, 1e-6, "applied after combat")
+end)
+
+test("ears share the bunny's fur colour", function()
+    local ns2 = boot({ schema = 2, furColor = "FFB6C1" }, { setup = function() mkPlayer(100, 900, 60) end })
+    local o = ears(ns2).player.overlay
+    local fur, detail
+    for _, ch in ipairs(o._children) do
+        if ch._texture then if not fur then fur = ch else detail = ch end end
+    end
+    truthy(fur._texture:find("bunny%-ears%.tga"))
+    local _, g = fur:GetVertexColor(); near(g, 0xB6 / 255)
+    slash("color #87CEEB")
+    local r = fur:GetVertexColor(); near(r, 0x87 / 255)
+    eq(detail._vertex, nil)
+    eq(fur._layer, "OVERLAY")
+end)
+
+test("no per-frame work from ears or options while idle", function()
+    local ns2 = boot(nil, { setup = function() mkPlayer(100, 900, 60); mkParty(4) end })
+    mock.advance(2)
+    for _, f in ipairs(mock.frames) do
+        if f ~= BunnyBarFrame then eq(f:GetScript("OnUpdate"), nil) end
+    end
 end)
 
 ----------------------------------------------------------------------------

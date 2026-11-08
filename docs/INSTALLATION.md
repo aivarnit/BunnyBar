@@ -13,12 +13,17 @@ BunnyBar/
 ├── BunnyBar.toc
 ├── Util.lua
 ├── Config.lua
+├── Appearance.lua
 ├── Placement.lua
 ├── Animation.lua
+├── Ears.lua
+├── Options.lua
 ├── Core.lua
 ├── LICENSE.txt
 └── Textures/
+    ├── bunny-ears.tga
     ├── bunny-hop.tga
+    ├── bunny-icon.tga
     ├── bunny-idle.tga
     ├── bunny-land.tga
     ├── bunny-sleep.tga

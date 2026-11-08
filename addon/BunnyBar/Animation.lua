@@ -24,17 +24,17 @@ local random, abs, max = math.random, math.abs, math.max
 -- Sprites
 ----------------------------------------------------------------------------
 
-local TEXTURE_PATH = "Interface\\AddOns\\" .. addonName .. "\\Textures\\"
-
--- Each sheet is a horizontal strip of 32x32 frames. `slots` is the strip
--- width in frames (a power of two; unused slots are transparent padding).
+-- Each sheet is a horizontal strip of 32x32 frames (two stacked layers, see
+-- Appearance.lua). `slots` is the strip width in frames (a power of two;
+-- unused slots are transparent padding). The folder comes from the current
+-- appearance variation.
 Bunny.SHEETS = {
-    idle   = { file = TEXTURE_PATH .. "bunny-idle.tga",   count = 4, slots = 4 },
-    hop    = { file = TEXTURE_PATH .. "bunny-hop.tga",    count = 2, slots = 2 },
-    land   = { file = TEXTURE_PATH .. "bunny-land.tga",   count = 1, slots = 1 },
-    sleepy = { file = TEXTURE_PATH .. "bunny-sleepy.tga", count = 7, slots = 8 },
-    sleep  = { file = TEXTURE_PATH .. "bunny-sleep.tga",  count = 6, slots = 8 },
-    wake   = { file = TEXTURE_PATH .. "bunny-wake.tga",   count = 4, slots = 4 },
+    idle   = { file = "bunny-idle.tga",   count = 4, slots = 4 },
+    hop    = { file = "bunny-hop.tga",    count = 2, slots = 2 },
+    land   = { file = "bunny-land.tga",   count = 1, slots = 1 },
+    sleepy = { file = "bunny-sleepy.tga", count = 7, slots = 8 },
+    sleep  = { file = "bunny-sleep.tga",  count = 6, slots = 8 },
+    wake   = { file = "bunny-wake.tga",   count = 4, slots = 4 },
 }
 
 -- Pose name -> { sheet, frame index }
@@ -103,6 +103,7 @@ local FIDGET_MIN, FIDGET_MAX = 2.5, 6
 ----------------------------------------------------------------------------
 
 local frame, sprite, backdrop, label
+local layers -- layered sprite textures (sprite == layers[1])
 local db
 
 -- stopped | idle | prep | air | land | between | drowsy | liedown | sleep | rise | waking
@@ -117,7 +118,7 @@ local resumeSleepFor        -- seconds of nap left when hidden mid-nap
 local seq, seqIndex, seqDone -- sequence player
 
 local actionTimer, poseTimer
-local currentSheet, currentPose, currentFacing
+local currentPose, currentFacing
 
 local stats = { hops = 0, journeys = 0, naps = 0, airTime = 0, since = nil }
 
@@ -155,15 +156,7 @@ local function setPose(name)
     if currentPose == name and currentFacing == facing then return end
     local pose = POSES[name]
     local sheet = SHEETS[pose[1]]
-    if currentSheet ~= sheet then
-        -- NEAREST filtering keeps the pixel art crisp at any size.
-        sprite:SetTexture(sheet.file, "CLAMP", "CLAMP", "NEAREST")
-        currentSheet = sheet
-    end
-    local left = (pose[2] - 1) / sheet.slots
-    local right = pose[2] / sheet.slots
-    if facing < 0 then left, right = right, left end -- mirror horizontally
-    sprite:SetTexCoord(left, right, 0, 1)
+    ns.Appearance.SetFrame(layers, ns.Appearance.SheetPath(sheet.file), pose[2], sheet.slots, facing < 0)
     currentPose, currentFacing = name, facing
 end
 
@@ -454,7 +447,8 @@ function Bunny:Create()
     label:SetText("BunnyBar: drag to move, then type /bunny lock")
     label:Hide()
 
-    sprite = frame:CreateTexture(nil, "ARTWORK")
+    layers = ns.Appearance.CreateLayers(frame, "ARTWORK")
+    sprite = layers[1]
 
     frame:SetScript("OnShow", onShow)
     frame:SetScript("OnHide", onHide)
@@ -522,6 +516,14 @@ function Bunny:Stop()
         place()
         setPose(resumeSleepFor and "sleep1" or "idle")
     end
+end
+
+-- Re-show the current pose (e.g. after the appearance variation changed).
+function Bunny:RefreshAppearance()
+    if not frame or not currentPose then return end
+    local pose = currentPose
+    currentPose = nil
+    setPose(pose)
 end
 
 function Bunny:SetShown(shown)

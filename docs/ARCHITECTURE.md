@@ -12,6 +12,8 @@ Research was done on 7 November 2026, three days after WoW Forever launched on 4
 | Lua | Modified Lua 5.1: no `goto`, `//`, bitwise operators or `_ENV`. No `require`, `io` or `os`. The TOC is the module loader. | Standard for all WoW clients |
 | AddOns folder | `World of Warcraft/_forever_/Interface/AddOns` (beta: `_classic_beta_`) | Add-on managers and guides. Not stated in any Blizzard post that was found. |
 | TOC suffixes | `_Forever.toc` / `_Camelot.toc` reportedly supported for multi-client addons | Single source. Not used by BunnyBar. |
+| Settings API | Modern `Settings.RegisterCanvasLayoutCategory` / `RegisterAddOnCategory` / `OpenToCategory` expected (Mainline API). | **Unverified for v0.2.** Feature-detected with fallbacks. |
+| Unit frame / portrait names | Modern `PlayerFrame.PlayerFrameContainer.PlayerPortrait`, `PartyFrame.MemberFrameN.Portrait` expected. | **Unverified.** Legacy names also tried. |
 | Bottom bar frame names | Unknown for Forever. See [Frame names to verify](#frame-names-to-verify-in-game). | **Unverified.** Every name is optional. |
 | SavedVariables | Standard. Ready at `ADDON_LOADED`. An early-beta restore bug was reportedly fixed in build 70009. | Guides |
 
@@ -35,13 +37,16 @@ Sources:
 ```text
 addon/BunnyBar/
 ├── BunnyBar.toc     metadata + load order
-├── Util.lua         pure functions (no WoW API): math, parsing, validation
-├── Config.lua       defaults, limits, SavedVariables sanitising, slash commands
+├── Util.lua         pure helpers: math, parsing, hex/HSV colour, safe frame reads
+├── Config.lua       defaults, limits, schema migration, Config.Set/Notify, slash commands
+├── Appearance.lua   cosmetic registries (variations, hats) + layered, tinted sprites
 ├── Placement.lua    automatic placement above the highest visible bottom bar
-├── Animation.lua    the frame, sprite poses, state machine, ApplyPosition, stats
-├── Core.lua         event wiring (ADDON_LOADED, PLAYER_LOGIN, layout events)
-└── Textures/        generated 32x32-frame sprite strips (TGA, 32-bit BGRA,
-                     padded to power-of-two widths)
+├── Animation.lua    the bunny frame, poses, state machine, ApplyPosition, stats
+├── Ears.lua         bunny ears over the player / party portraits
+├── Options.lua      Settings panel (colour picker, size presets, accessories)
+├── Core.lua         event wiring
+└── Textures/        generated sprite strips (TGA, 32-bit BGRA, power-of-two),
+                     each with a fur layer on top and a detail layer below
 scripts/
 ├── generate_sprites.py   pixel art -> TGA + PNG preview (stdlib only)
 ├── validate.py           static checks + runs the Lua test-suite
@@ -53,6 +58,61 @@ tests/
 ```
 
 Every Lua file starts with `local addonName, ns = ...` and shares state only through the private `ns` table. The only globals are `BunnyBarDB` (SavedVariables), `SLASH_BUNNYBAR1/2`, `SlashCmdList.BUNNYBAR` and the frame name `BunnyBarFrame` (named so `/fstack` can identify it). The test-suite fails if any other global is written.
+
+## Appearance and recolouring
+
+Every sprite texture stacks **two layers of the same frames**: the fur layer (top half) and the detail layer (bottom half). The generator splits each frame by palette. Main fur, shade and tail pixels go to the fur layer, normalised so the main fur tone is pure white. Everything else goes to the detail layer: outline, eyes and catch-light, nose, mouth, blush, inner ears, eyelid and the "z". The layers never overlap.
+
+In game, each layer is its own texture showing the same frame, with `SetTexCoord(…, 0, 0.5)` and `(…, 0.5, 1)`. Only the fur layer gets `SetVertexColor(fur colour)`. As a result:
+
+- the main fur takes **exactly** the chosen colour, and shading keeps its original ratio to it;
+- eyes, nose, inner ears, outlines, transparency and nearest-neighbour filtering are untouched;
+- every animation frame recolours identically, because all frames share the same two normalised fur tones (the tests check this);
+- nothing is generated at runtime, and a colour change is a single `SetVertexColor` per fur texture;
+- the default colour, `#F6F3FA` (the original fur tone), reproduces the v0.1 art within 1/255. The one exception is the cotton tail, which now uses the main fur tone (5/255 darker) so it can be recoloured.
+
+`Appearance.lua` also holds small **registries** for future cosmetics: `variation` (sprite set / fur pattern; currently only `classic`) and `hat` (currently only `none`). Animation code only asks Appearance to "show sheet X, frame N, mirrored or not", so new layers such as hats, accessories or separately tinted accessory colours can be added without touching movement or timing. The options panel shows the current style as text and doesn't offer selectors until there is more than one choice.
+
+## Options panel
+
+`Options.lua` registers a canvas-layout category through `Settings.RegisterCanvasLayoutCategory` + `Settings.RegisterAddOnCategory`. If those are missing it falls back to `InterfaceOptions_AddCategory`, and failing that, to slash commands only. Controls are built the first time the panel is shown. `/bunny options` calls `Settings.OpenToCategory(category:GetID())`, deferred until after combat.
+
+- **Colour:**
+  - a 150×150 saturation (x) / brightness (y) square over the current hue, built from a hue colour texture plus white and black gradient overlays (`SetGradient` with `CreateColor`, falling back to `SetGradientAlpha`, then a flat colour);
+  - a hue `Slider` over six gradient segments, and a separate brightness `Slider`;
+  - a hex `EditBox`, a swatch, a live preview of the real tinted sprite, and **Reset Color**.
+
+  Blizzard's `ColorPickerFrame` is a modal popup, so it doesn't fit the inline layout that was asked for. The square only runs `OnUpdate` while the mouse button is held on it.
+- **Size:** four radio buttons (Tiny 16, Small 32, Regular 64, Large 128). A non-preset size set with `/bunny size` shows as "Custom: N" with no radio selected; the panel never changes it.
+- **Portrait Accessories:** "Bunny ears on my portrait", "Bunny ears on party portraits".
+- **Styles:** informational text only.
+
+All controls, slash commands and `/bunny reset` go through `Config.Set()`. That calls `Config.Notify()`, which updates the bunny, the appearance, the ears and `Options.Refresh()`. The panel keeps its own HSV state, so greys keep the hue you chose. Widget templates (`UIRadioButtonTemplate`, `UICheckButtonTemplate`, `InputBoxTemplate`, `UIPanelButtonTemplate`) are created through `pcall`, falling back to plain widgets.
+
+## Portrait ears
+
+`Ears.lua` draws a 32×16 pair of ears (tinted like the fur) above:
+
+- the **player portrait**: `PlayerFrame.PlayerFrameContainer.PlayerPortrait`, or legacy `PlayerPortrait`;
+- each **party portrait**: `PartyFrame.MemberFrameN.Portrait`, or legacy `PartyMemberFrameNPortrait`.
+
+Combat and taint safety:
+
+- Each pair of ears is BunnyBar's own frame, **parented and anchored to `UIParent`** and positioned from the portrait's rectangle read through `pcall`. It is never anchored to a unit frame: a frame anchored to a protected frame becomes implicitly protected and couldn't be moved, shown or hidden in combat.
+- Nothing on Blizzard's unit frames is created, changed or re-anchored: no attributes, scripts, textures or children. Visibility is observed with `HookScript("OnShow"/"OnHide")` post-hooks on the unit frames and `PartyFrame`. These are installed only **out of combat**; if the addon loads in combat, installation waits for `PLAYER_REGEN_ENABLED`.
+- Overlays are click-through (`EnableMouse(false)`). They take the unit frame's strata and sit 10 frame levels above it.
+- Defensive guard: if an overlay ever reported `IsProtected()` in combat, changes would wait for combat to end.
+
+Ear size is 0.8 × the portrait width, with height half of that. They overlap the portrait's top by 25 % and follow UI scale, using effective-scale conversion.
+
+Refresh triggers are debounced (0.1 s, with one settle re-check 0.5 s later):
+
+- unit frame / `PartyFrame` show or hide;
+- `EditModeManagerFrame` closing;
+- `GROUP_ROSTER_UPDATE`, `EDIT_MODE_LAYOUTS_UPDATED`, `UI_SCALE_CHANGED`, `DISPLAY_SIZE_CHANGED`, `PLAYER_ENTERING_WORLD`;
+- combat end.
+
+No `OnUpdate` is used.
 
 ## Frame layout
 
@@ -164,9 +224,19 @@ None of these names are confirmed on WoW Forever. With the bunny on automatic pl
 | XP / reputation (modern) | `MainStatusTrackingBarContainer`, `SecondaryStatusTrackingBarContainer` (each with a `.bars` table) |
 | XP / reputation (older layouts) | `StatusTrackingBarManager`, `MainMenuExpBar`, `ReputationWatchBar` |
 
+### Portrait frame names to verify in game
+
+| Portrait | Names tried | How to check |
+|---|---|---|
+| Player | `PlayerFrame.PlayerFrameContainer.PlayerPortrait`, then `PlayerPortrait` | `/fstack` over your portrait; or `/run print(PlayerFrame.PlayerFrameContainer.PlayerPortrait)` |
+| Party 1–4 | `PartyFrame.MemberFrame1..4.Portrait`, then `PartyMemberFrame1..4Portrait` | `/fstack` over a party portrait (default, non-raid-style party frames) |
+
 ## SavedVariables
 
-`BunnyBarDB` (account-wide). On `ADDON_LOADED`, `Config.Sanitize` rebuilds it:
+`BunnyBarDB` (account-wide), schema **2**. On `ADDON_LOADED`, `Config.Sanitize` rebuilds it:
+
+- **Migration from v0.1 (schema 1)**: every existing setting is kept, including position, lock, track width, speed, interval, sleep chance, visibility and size. New keys get defaults: `furColor = "F6F3FA"`, `variation = "classic"`, `hat = "none"`, `earsPlayer = true`, `earsParty = true`. Only *new* installs default to size 64. A v0.1 save with a missing or broken size falls back to v0.1's default, 32.
+- String settings are validated: the colour must be six hex digits (canonicalised to upper case), and the variation and hat must be registered.
 
 - Unknown keys are dropped and missing keys are filled from `DEFAULTS`.
 - Numbers are clamped to `LIMITS` and integer settings are rounded. NaN, ±inf and wrong types are replaced with defaults.
@@ -179,7 +249,8 @@ A dragged position is stored as `BOTTOM` → `UIParent BOTTOM` with an x offset 
 | Layer | Tool | What it proves |
 |---|---|---|
 | Static | `scripts/validate.py` | TOC metadata and references (exact-case), no unlisted Lua, Lua 5.1 syntax (via LuaJIT/lua5.1), no 5.2+ syntax, no forbidden APIs (`print`, `io`, `os`, `hooksecurefunc`, combat log, secure templates), TGA format/size/frames/transparency, sprites match the generator |
-| Offline behaviour | `tests/lua/run_tests.lua` + `wow_mock.lua` | Loads the real addon files in TOC order. Covers defaults, sanitising, slash parsing and validation, 10 simulated minutes of movement (bounds, ≤ 2.5 units per frame, facing, naps, idle waits ≥ 4 s, `OnUpdate` only while airborne, < 15 % of frames), hide/show/Alt+Z pausing, drag and save, reset, unknown events, global leaks. **Placement:** Action Bar 2 on/off × XP bar on/off, reputation bar only, empty XP container, legacy XP/rep frames, all bars hidden or missing (fallback), invalid geometry (secret, erroring, nil, NaN, zero-size, too tall), custom Edit Mode positions (moved main bar, side bars off the track, bars at the top), centring without a main bar, UI scale conversion, live toggling with coalesced deferred refresh, level-cap XP bar hiding, every refresh event, no re-anchoring when nothing changed, manual override and `/bunny reset`, saved position on reload, Alt+Z, the `/bunny bars` report, hooks installed once without replacing scripts. **Live repositioning:** Action Bar 2 on/off/on with bounded settling, XP container hidden/shown, reputation replacing XP (same and separate containers), Edit Mode closing and Settings closing as triggers, a 50-change burst collapsing into one pass, continuous changes refreshing at least every `MAX_WAIT`, geometry that becomes valid or shifts after a delay (picked up by settle passes), bounded settling with permanently invalid geometry, no recursion from our own `SetPoint`, manual positions ignoring every trigger, missing frames / missing `HookScript` / failing `HookScript`, and the diagnostics in `/bunny bars`. **Naps:** sequence frame counts and timing windows, full-nap frame order and per-frame durations, no movement or `OnUpdate` during a nap, twitches only between breaths, waking only from the resting frame, `/bunny test` in every nap phase, hiding in every phase (no timers left, valid pose, nap resumes with its remaining time), settings changes mid-nap, no back-to-back naps |
+| Offline behaviour | `tests/lua/run_tests.lua` + `wow_mock.lua` | Loads the real addon files in TOC order. Covers defaults, sanitising, slash parsing and validation, 10 simulated minutes of movement (bounds, ≤ 2.5 units per frame, facing, naps, idle waits ≥ 4 s, `OnUpdate` only while airborne, < 15 % of frames), hide/show/Alt+Z pausing, drag and save, reset, unknown events, global leaks. **v0.2:** hex parsing (valid and invalid), RGB↔HSV round-trips, schema-1 migration and fallbacks, appearance registry, fur-only tinting and the colour persisting through every sheet and pose, `/bunny color`, Settings registration plus the legacy, missing and failing API paths, lazy panel build, `/bunny options` deferred in combat, missing widget templates, hex box / hue / brightness / square / swatch / bunny staying in sync (including greys keeping their hue and `OnUpdate` only while dragging), invalid hex in the panel, size radios versus custom sizes, ear checkboxes versus `/bunny ears`, `/bunny reset` updating an open panel, ears geometry and click-through and `UIParent`-only anchoring, portrait visibility, party join / leave / re-sort, legacy portrait names, missing portraits, invalid geometry, UI scale and Edit Mode moves, combat-deferred hooks and protected-overlay deferral, ears following the fur colour, and no idle `OnUpdate`. **Placement:** Action Bar 2 on/off × XP bar on/off, reputation bar only, empty XP container, legacy XP/rep frames, all bars hidden or missing (fallback), invalid geometry (secret, erroring, nil, NaN, zero-size, too tall), custom Edit Mode positions (moved main bar, side bars off the track, bars at the top), centring without a main bar, UI scale conversion, live toggling with coalesced deferred refresh, level-cap XP bar hiding, every refresh event, no re-anchoring when nothing changed, manual override and `/bunny reset`, saved position on reload, Alt+Z, the `/bunny bars` report, hooks installed once without replacing scripts. **Live repositioning:** Action Bar 2 on/off/on with bounded settling, XP container hidden/shown, reputation replacing XP (same and separate containers), Edit Mode closing and Settings closing as triggers, a 50-change burst collapsing into one pass, continuous changes refreshing at least every `MAX_WAIT`, geometry that becomes valid or shifts after a delay (picked up by settle passes), bounded settling with permanently invalid geometry, no recursion from our own `SetPoint`, manual positions ignoring every trigger, missing frames / missing `HookScript` / failing `HookScript`, and the diagnostics in `/bunny bars`. **Naps:** sequence frame counts and timing windows, full-nap frame order and per-frame durations, no movement or `OnUpdate` during a nap, twitches only between breaths, waking only from the resting frame, `/bunny test` in every nap phase, hiding in every phase (no timers left, valid pose, nap resumes with its remaining time), settings changes mid-nap, no back-to-back naps |
+| Recolouring | `tests/test_static.py` | Layers are disjoint and complete. The default colour reproduces the original art. Only two normalised fur tones are used across every frame. Pink, sky blue and black change the fur only, and the main fur takes the exact colour. The portrait ears sprite is rooted, symmetric and has pink inner ears. |
 | Art | `tests/test_static.py` | One shared ground row, breathing moves the torso exactly 1 px and leaves the head still, twitches are subtle, consecutive frames overlap (silhouette IoU ≥ 0.7), z glyphs never touch the bunny, generator timings match the Lua sequences, the animated GIF decodes |
 | Tooling | `tests/test_static.py` | Validators catch broken inputs (negative tests). Packaging is reproducible and verification catches a wrong root, missing files and junk files. Every command is documented. |
 | **In game** | manual, see below | **Not yet done.** This is the only layer that proves real compatibility. |
@@ -208,3 +279,8 @@ Run these in WoW Forever and note the client build (shown on the login screen):
 12. Clicking action buttons right under the bunny still works.
 13. `/bunny stats` prints memory and CPU figures (or says they're not available).
 14. Optional: compare FPS on an M1 MacBook Air with `/bunny hide` and `/bunny show`.
+15. **v0.2 options:** Esc → Options → AddOns lists **BunnyBar**, and `/bunny options` opens it. In combat it opens when combat ends. All controls render: square, hue and brightness gradients, hex box, swatch, preview bunny, radios, checkboxes.
+16. **v0.2 colour:** drag the square and both sliders, then type `#FFB6C1`, `#87CEEB`, `#000000`, `#FFFFFF` and an invalid value. The bunny and the portrait ears change instantly while the eyes, nose, inner ears and outline stay the same. Watch a hop and a full nap in a non-default colour. `/bunny color #87CEEB` updates the open panel.
+17. **v0.2 size:** try each preset, then `/bunny size 48`, which should show "Custom: 48". Check the pixels look sharp and the bunny still sits right on the bar.
+18. **v0.2 ears:** the ears sit on top of your portrait and on party portraits. Join, leave and re-sort a party. Toggle both checkboxes. Move the player frame in Edit Mode and change the UI scale. Check that clicking and targeting the portraits still works, including in combat, and that there are no "Interface action failed because of an AddOn" or `ADDON_ACTION_BLOCKED` messages after combat, roster changes or `/reload` in combat. Record the portrait frame names with `/fstack` if no ears appear.
+19. **v0.2 upgrade:** with a v0.1 `BunnyBarDB`, check that size 32, position, speed and the other settings survive. `/bunny reset` should give Regular (64), the default colour and an updated open panel.

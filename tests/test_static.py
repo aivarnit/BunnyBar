@@ -56,7 +56,8 @@ class TocTests(unittest.TestCase):
         meta, files = validate.check_toc(r)
         self.assertEqual(r.errors, [])
         self.assertEqual(meta["Interface"], "16001")
-        self.assertEqual(files, ["Util.lua", "Config.lua", "Placement.lua", "Animation.lua", "Core.lua"])
+        self.assertEqual(files, ["Util.lua", "Config.lua", "Appearance.lua", "Placement.lua",
+                                 "Animation.lua", "Ears.lua", "Options.lua", "Core.lua"])
 
     def test_missing_listed_file_is_caught(self):
         with TempAddon() as d:
@@ -120,12 +121,14 @@ class TextureTests(unittest.TestCase):
         self.assertEqual(errors_for(validate.check_textures, validate.ADDON_DIR), [])
 
     def test_sheet_dimensions(self):
-        expected = {"bunny-idle.tga": 128, "bunny-hop.tga": 64, "bunny-land.tga": 32,
-                    "bunny-sleepy.tga": 256, "bunny-sleep.tga": 256, "bunny-wake.tga": 128}
+        # Two stacked layers (fur, detail): height = 2 x frame height.
+        expected = {"bunny-idle.tga": (128, 64), "bunny-hop.tga": (64, 64), "bunny-land.tga": (32, 64),
+                    "bunny-sleepy.tga": (256, 64), "bunny-sleep.tga": (256, 64),
+                    "bunny-wake.tga": (128, 64), "bunny-ears.tga": (32, 32)}
         self.assertEqual(set(validate.texture_references()), set(expected))
-        for name, width in expected.items():
+        for name, (width, height) in expected.items():
             w, h, bpp, alpha, top_left, _ = validate.read_tga(validate.ADDON_DIR / "Textures" / name)
-            self.assertEqual((w, h, bpp, alpha, top_left), (width, 32, 32, 8, True), name)
+            self.assertEqual((w, h, bpp, alpha, top_left), (width, height, 32, 8, True), name)
 
     def test_missing_texture_is_caught(self):
         with TempAddon() as d:
@@ -352,6 +355,77 @@ class SleepArtTests(unittest.TestCase):
         self.assertGreater(len(set(frames)), 15)
 
 
+class RecolourTests(unittest.TestCase):
+    """Fur / detail layer split used for recolouring."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.frames = [c for fr in generate_sprites.frames().values() for c in fr]
+        cls.ears = generate_sprites.portrait_ears()
+
+    def test_layers_are_disjoint_and_cover_the_sprite(self):
+        for c in self.frames + [self.ears]:
+            fur, detail = generate_sprites.split_layers(c)
+            for y in range(c.h):
+                for x in range(c.w):
+                    self.assertFalse(fur.px[y][x][3] and detail.px[y][x][3])
+                    self.assertEqual(bool(c.px[y][x][3]), bool(fur.px[y][x][3] or detail.px[y][x][3]))
+
+    def test_default_colour_reproduces_the_original_art(self):
+        tail = generate_sprites.TAIL[:3]
+        for c in self.frames:
+            t = generate_sprites.tint_composite(c, generate_sprites.DEFAULT_FUR_HEX)
+            for y in range(32):
+                for x in range(32):
+                    a, b = c.px[y][x], t.px[y][x]
+                    self.assertEqual(a[3], b[3])
+                    if a[3]:
+                        # The tail now uses the main fur tone (5/255 darker).
+                        limit = 5 if a[:3] == tail else 1
+                        self.assertLessEqual(max(abs(a[i] - b[i]) for i in range(3)), limit, (x, y))
+
+    def test_fur_tones_are_consistent_across_every_frame(self):
+        tones = set()
+        for c in self.frames + [self.ears]:
+            fur, _ = generate_sprites.split_layers(c)
+            tones |= {p[:3] for row in fur.px for p in row if p[3]}
+        # Exactly the normalised main fur (white) and shade tones: every frame
+        # recolours identically.
+        self.assertEqual(len(tones), 2, tones)
+        self.assertIn((255, 255, 255), tones)
+
+    def test_recolour_changes_fur_only(self):
+        for hx in ("FFB6C1", "87CEEB", "000000"):
+            rgb = tuple(int(hx[i:i + 2], 16) for i in (0, 2, 4))
+            for c in self.frames[:6] + [self.ears]:
+                t = generate_sprites.tint_composite(c, hx)
+                for y in range(c.h):
+                    for x in range(c.w):
+                        p = c.px[y][x]
+                        if not p[3]:
+                            self.assertEqual(t.px[y][x][3], 0)
+                        elif generate_sprites.is_fur(p):
+                            if p[:3] == generate_sprites.FUR[:3]:
+                                self.assertEqual(t.px[y][x][:3], rgb, "main fur takes the exact colour")
+                        else:
+                            self.assertEqual(t.px[y][x], p, "eyes/nose/ears/outline unchanged")
+
+    def test_portrait_ears_sprite(self):
+        e = self.ears
+        self.assertEqual((e.w, e.h), (32, 16))
+        bottom = [x for x in range(32) if e.px[15][x][3]]
+        self.assertTrue(bottom, "ears are rooted on the bottom edge")
+        left = [x for x in bottom if x < 16]
+        right = [x for x in bottom if x >= 16]
+        self.assertTrue(left and right, "two ears")
+        pink = generate_sprites.PINK[:3]
+        self.assertTrue(any(p[:3] == pink for row in e.px for p in row), "pink inner ears")
+        # Mirror-symmetric silhouette (within 1 px).
+        sil = {(x, y) for y in range(16) for x in range(32) if e.px[y][x][3]}
+        mirrored = {(31 - x, y) for x, y in sil}
+        self.assertLessEqual(len(sil ^ mirrored), 8)
+
+
 class PackageTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -403,7 +477,8 @@ class DocsTests(unittest.TestCase):
         commands = (ROOT / "docs" / "COMMANDS.md").read_text()
         readme = (ROOT / "README.md").read_text()
         for cmd in ["show", "hide", "lock", "unlock", "reset", "size", "speed",
-                    "interval", "width", "height", "test", "stats", "bars"]:
+                    "interval", "width", "height", "test", "stats", "bars", "options",
+                    "color", "ears"]:
             self.assertIn(cmd, config)
             self.assertIn(f"/bunny {cmd}", commands, cmd)
             self.assertIn(f"/bunny {cmd}", readme, cmd)

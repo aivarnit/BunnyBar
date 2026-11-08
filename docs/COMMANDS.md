@@ -7,6 +7,9 @@ All commands start with `/bunny`, or the alias `/bunnybar`. Command words aren't
 | Command | Effect |
 |---|---|
 | `/bunny` or `/bunny help` | Print the command list. |
+| `/bunny options` (aliases `config`, `settings`) | Open **Esc → Options → AddOns → BunnyBar**. In combat it opens as soon as combat ends. |
+| `/bunny color #RRGGBB` (alias `colour`) | Set the fur colour, for example `#FFB6C1` (pink), `#87CEEB` (sky blue) or `#000000`. The `#` is optional and case doesn't matter. Invalid values are rejected and the colour stays as it was. `/bunny color reset` restores the original (`#F6F3FA`); `/bunny color` on its own prints the current value. |
+| `/bunny ears player on\|off`, `/bunny ears party on\|off` | Show or hide bunny ears on your portrait or on party portraits. `/bunny ears` on its own prints the current state. |
 | `/bunny show` | Show the bunny and resume animation. |
 | `/bunny hide` | Hide the bunny. All timers and updates stop while it's hidden. |
 | `/bunny lock` | Lock the position. The frame becomes click-through again. |
@@ -22,7 +25,7 @@ Run one without a value to print the current setting and its allowed range, for 
 
 | Command | Range | Default | Meaning |
 |---|---|---|---|
-| `/bunny size 32` | 16–128, whole numbers | 32 | Sprite size in UI units. The art is 32×32 pixels, so 32, 64 and 96 give the sharpest results at UI scale 1. |
+| `/bunny size 64` | 16–128, whole numbers | 64 (32 for installs from v0.1) | Sprite size in UI units. The options panel offers the presets Tiny 16, Small 32, Regular 64 and Large 128. Any other whole size works here and shows as **Custom** in the panel. The art is 32×32 pixels, so 32, 64 and 128 are the sharpest at UI scale 1. |
 | `/bunny speed 1.0` | 0.25–4 | 1.0 | Animation speed multiplier. At 2.0 a hop takes 0.2 s instead of 0.4 s. It doesn't change how often the bunny hops. |
 | `/bunny interval 8` | 2–120 | 8 | *Average* seconds between hop journeys. Each wait is random, between 50 % and 150 % of this value (default 4–12 s). |
 | `/bunny width 480` | 64–2000, whole numbers | 480 | Width of the horizontal track the bunny roams. |
@@ -34,6 +37,7 @@ Values must be plain decimal numbers. Hex (`0x20`), exponents (`1e2`), `nan` and
 
 ```text
 /bunny size 12      → BunnyBar: Size must be between 16 and 128.
+/bunny color pink   → BunnyBar: 'pink' is not a colour. Use six hex digits, e.g. #FFB6C1.
 /bunny size 33.5    → BunnyBar: Size must be a whole number (16 to 128).
 /bunny speed fast   → BunnyBar: 'fast' is not a number. Use 0.25 to 4.
 /bunny dance        → BunnyBar: unknown command 'dance'. Type /bunny for help.

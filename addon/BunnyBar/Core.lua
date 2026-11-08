@@ -1,5 +1,5 @@
 -- BunnyBar: addon bootstrap and event handling.
--- Loaded last (see BunnyBar.toc), after Util, Config and Animation.
+-- Loaded last (see BunnyBar.toc).
 
 local addonName, ns = ...
 
@@ -22,6 +22,10 @@ local LAYOUT_EVENTS = {
     "DISABLE_XP_GAIN",           -- XP bar hidden
     "UPDATE_EXPANSION_LEVEL",    -- level cap raised: XP bar returns
 }
+
+-- Events only the portrait ears need (party changes, combat end for
+-- deferred work). PLAYER_REGEN_ENABLED also opens a deferred options panel.
+local EAR_EVENTS = { "GROUP_ROSTER_UPDATE", "PLAYER_REGEN_ENABLED" }
 
 local function tryRegister(event)
     return pcall(events.RegisterEvent, events, event)
@@ -49,18 +53,29 @@ function handlers.PLAYER_LOGIN()
     bunny:ApplyPosition()
     bunny:SetLocked(db.locked)
     bunny:SetShown(db.shown)
+    ns.Appearance.Apply()
+    ns.Ears.Init()
+    ns.Options.Register()
     for i = 1, #LAYOUT_EVENTS do tryRegister(LAYOUT_EVENTS[i]) end
+    for i = 1, #EAR_EVENTS do tryRegister(EAR_EVENTS[i]) end
     -- Edit Mode applies the action bar layout shortly after login; place the
     -- bunny again once that has settled.
     C_Timer.After(1, ns.Placement.Refresh)
 end
 
-local isLayoutEvent = {}
+local isLayoutEvent, isEarEvent = {}, {}
 for i = 1, #LAYOUT_EVENTS do isLayoutEvent[LAYOUT_EVENTS[i]] = true end
+for i = 1, #EAR_EVENTS do isEarEvent[EAR_EVENTS[i]] = true end
 
 events:SetScript("OnEvent", function(_, event, ...)
     if isLayoutEvent[event] then
         requestRefresh(event)
+        ns.Ears.OnEvent(event) -- portraits move with Edit Mode / UI scale too
+        return
+    end
+    if isEarEvent[event] then
+        ns.Ears.OnEvent(event)
+        if event == "PLAYER_REGEN_ENABLED" then ns.Options.OnCombatEnd() end
         return
     end
     local handler = handlers[event]
