@@ -10,6 +10,7 @@
 --   behavior  x Bunny.BEHAVIOR_CHANCE  (chance of an idle behaviour)
 --   wait      x the idle wait (interval x U(0.5, 1.5))
 --   sleep     x nap length
+--   special   x Bunny.SPECIAL_CHANCE   (chance of the style's special, after its cooldown)
 --   weights   x idle behaviour weights (carrot, wash, scratch, stretch, look)
 -- A hop is whatever is left, so fewer naps/behaviours and shorter waits mean
 -- more hopping. Balanced with the Happy mood is all 1s: exactly the v0.3
@@ -40,30 +41,30 @@ Personality.LABELS = {
 -- pick; `wakeStretch` = chance to stretch right after waking up.
 Personality.PROFILES = {
     balanced = {
-        nap = 1.0, burrow = 1.0, behavior = 1.0, wait = 1.0, sleep = 1.0,
+        nap = 1.0, burrow = 1.0, behavior = 1.0, wait = 1.0, sleep = 1.0, special = 1.0,
         weights = {}, rates = { tired = 1.0, hungry = 1.0, energy = 1.0 },
         noRepeat = 1, wakeStretch = 0,
     },
     lazy = {
-        nap = 2.2, burrow = 0.5, behavior = 1.3, wait = 1.6, sleep = 1.5,
+        nap = 2.2, burrow = 0.5, behavior = 1.3, wait = 1.6, sleep = 1.5, special = 0.7,
         weights = { stretch = 1.5, wash = 1.2, look = 0.8 },
         rates = { tired = 1.5, hungry = 1.0, energy = 0.6 },
         noRepeat = 1, wakeStretch = 0.3,
     },
     energetic = {
-        nap = 0.4, burrow = 1.2, behavior = 1.1, wait = 0.6, sleep = 0.7,
+        nap = 0.4, burrow = 1.2, behavior = 1.1, wait = 0.6, sleep = 0.7, special = 1.2,
         weights = { look = 1.5, scratch = 1.3, stretch = 0.7 },
         rates = { tired = 0.7, hungry = 1.3, energy = 1.5 },
         noRepeat = 1, wakeStretch = 0,
     },
     playful = {
-        nap = 0.8, burrow = 2.0, behavior = 1.4, wait = 0.9, sleep = 0.9,
+        nap = 0.8, burrow = 2.0, behavior = 1.4, wait = 0.9, sleep = 0.9, special = 1.5,
         weights = { carrot = 2.0, look = 1.5 },
         rates = { tired = 1.0, hungry = 1.2, energy = 1.8 },
         noRepeat = 2, wakeStretch = 0,
     },
     sleepy = {
-        nap = 2.5, burrow = 0.6, behavior = 0.9, wait = 1.3, sleep = 1.6,
+        nap = 2.5, burrow = 0.6, behavior = 0.9, wait = 1.3, sleep = 1.6, special = 0.6,
         weights = { stretch = 1.4 },
         rates = { tired = 2.0, hungry = 0.8, energy = 0.5 },
         noRepeat = 1, wakeStretch = 0.6,
@@ -72,10 +73,10 @@ Personality.PROFILES = {
 
 -- Mood multipliers (combined with the personality's by multiplication).
 Personality.MOODS = {
-    happy   = { nap = 1.0, burrow = 1.0, behavior = 1.0, wait = 1.0, weights = {} },
-    sleepy  = { nap = 2.0, burrow = 0.6, behavior = 0.8, wait = 1.2, weights = { stretch = 1.5 } },
-    playful = { nap = 0.6, burrow = 1.8, behavior = 0.8, wait = 0.8, weights = { look = 1.5, scratch = 1.2 } },
-    hungry  = { nap = 1.0, burrow = 1.0, behavior = 1.6, wait = 1.0, weights = { carrot = 4.0 } },
+    happy   = { nap = 1.0, burrow = 1.0, behavior = 1.0, wait = 1.0, special = 1.0, weights = {} },
+    sleepy  = { nap = 2.0, burrow = 0.6, behavior = 0.8, wait = 1.2, special = 0.7, weights = { stretch = 1.5 } },
+    playful = { nap = 0.6, burrow = 1.8, behavior = 0.8, wait = 0.8, special = 1.4, weights = { look = 1.5, scratch = 1.2 } },
+    hungry  = { nap = 1.0, burrow = 1.0, behavior = 1.6, wait = 1.0, special = 0.8, weights = { carrot = 4.0 } },
 }
 -- Happy is the neutral resting mood (all 1x): "normal activities". So
 -- Balanced + Happy is exactly the v0.3 scheduler.
@@ -91,6 +92,7 @@ Personality.EVENTS = {
     scratch = { hungry = 0.5, energy = 1.0 },
     stretch = { hungry = 0.5, energy = 1.5, tired = -1.0 },
     look    = { hungry = 0.5, energy = 1.0 },
+    special = { hungry = 0.5, energy = 1.0 },
 }
 
 -- A counter at or above its threshold makes the matching mood a candidate.
@@ -147,6 +149,7 @@ function Personality.Params()
     params.burrow = P.burrow * (M and M.burrow or 1)
     params.behavior = P.behavior * (M and M.behavior or 1)
     params.wait = P.wait * (M and M.wait or 1)
+    params.special = P.special * (M and M.special or 1)
     params.sleep = P.sleep
     params.noRepeat = P.noRepeat
     params.wakeStretch = P.wakeStretch
@@ -234,8 +237,9 @@ function Personality.Describe(debug)
     local P = Personality.Params()
     local d = db()
     local B = ns.Bunny
-    lines[#lines + 1] = ("  chances: nap %.0f%%, burrow %.0f%% (after cooldown), idle behaviour %.0f%% | idle wait x%.2f | nap length x%.2f"):format(
+    lines[#lines + 1] = ("  chances: nap %.0f%%, burrow %.0f%% (after cooldown), special %.0f%% (after cooldown), idle behaviour %.0f%% | idle wait x%.2f | nap length x%.2f"):format(
         100 * Personality.Chance(d.sleepChance, P.nap), 100 * Personality.Chance(B.BURROW_CHANCE, P.burrow),
+        100 * Personality.Chance(B.SPECIAL_CHANCE, P.special),
         100 * Personality.Chance(B.BEHAVIOR_CHANCE, P.behavior), P.wait, P.sleep)
     local total, parts = 0, {}
     for _, name in ipairs(B.BEHAVIOR_ORDER) do total = total + B.BEHAVIORS[name].weight * P.weights[name] end

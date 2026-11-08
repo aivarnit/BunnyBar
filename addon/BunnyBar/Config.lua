@@ -14,7 +14,8 @@ ns.Config = Config
 -- 3: styles, idle behaviours, burrowing, hover hearts.
 -- 4: furColor is an optional override (nil = use the style's default).
 -- 5: personality and mood system.
-Config.SCHEMA_VERSION = 5
+-- 6: style-specific special effects (on/off + frequency).
+Config.SCHEMA_VERSION = 6
 Config.LEGACY_DEFAULT_SIZE = 32
 
 -- Default settings. `point == nil` means "auto": place the track just above
@@ -50,6 +51,9 @@ Config.DEFAULTS = {
     -- Personality / moods (see Personality.lua)
     personality = "balanced",   -- balanced | lazy | energetic | playful | sleepy
     moods = true,
+    -- Style-specific special behaviours (see Animation.lua, SpecialData.lua)
+    effects = true,
+    effectsFrequency = "normal", -- rare | normal | often
     -- Saved position (nil = auto placement above the bottom bars).
     point = nil, relativePoint = nil, x = nil, y = nil,
 }
@@ -104,6 +108,7 @@ Config.ENUMS = {
     burrowFrequency = { "rare", "normal", "often" },
     heartIntensity = { "subtle", "normal", "extra" },
     personality = { "balanced", "lazy", "energetic", "playful", "sleepy" },
+    effectsFrequency = { "rare", "normal", "often" },
 }
 
 local function enumValidator(key)
@@ -122,6 +127,7 @@ local STRING_VALIDATORS = {
     burrowFrequency = enumValidator("burrowFrequency"),
     heartIntensity = enumValidator("heartIntensity"),
     personality = enumValidator("personality"),
+    effectsFrequency = enumValidator("effectsFrequency"),
     furColor = function(v) return (Util.ParseHex(v)) end,
     variation = function(v)
         return ns.Appearance and ns.Appearance.IsValid("variation", v) and v or nil
@@ -215,6 +221,8 @@ function Config.Notify(key)
         if ns.Appearance then ns.Appearance.Apply() end
         if ns.Ears then ns.Ears.Refresh() end
         if ns.Hearts then ns.Hearts.Refresh() end
+    elseif key == "effects" then
+        if bunny and not ns.db.effects then bunny:CancelSpecial() end
     elseif HEART_KEYS[key] then
         if ns.Hearts then ns.Hearts.Refresh() end
     elseif APPEARANCE_KEYS[key] then
@@ -347,9 +355,10 @@ local HELP = {
     "|cffffd200/bunny interval <2-120>|r - average seconds between hops (default 8)",
     "|cffffd200/bunny width <64-2000>|r - track width (default 480)",
     "|cffffd200/bunny height <0-64>|r - hop height (default 16)",
-    "|cffffd200/bunny test [hop|carrot|wash|scratch|stretch|look|burrow|nap|hearts]|r - try a behaviour",
+    "|cffffd200/bunny test [hop|carrot|wash|scratch|stretch|look|burrow|nap|special|hearts]|r - try a behaviour",
     "|cffffd200/bunny idle|carrot|burrow <on|off>|r, |cffffd200/bunny burrow rare|normal|often|r - behaviours",
     "|cffffd200/bunny hearts <on|off|subtle|normal|extra>|r - hover hearts",
+    "|cffffd200/bunny effects [on|off|rare|normal|often]|r - style-specific special effects",
     "|cffffd200/bunny personality <balanced|lazy|energetic|playful|sleepy>|r - personality",
     "|cffffd200/bunny mood [on|off]|r - current mood and personality",
     "|cffffd200/bunny stats|r - performance and status info",
@@ -422,13 +431,15 @@ Config.Handlers = {
             return
         end
         local valid = { hop = true, carrot = true, wash = true, scratch = true, stretch = true,
-                        look = true, burrow = true, nap = true }
+                        look = true, burrow = true, nap = true, special = true }
         if not valid[what] then
-            printError(("unknown test '%s'. Try hop, carrot, wash, scratch, stretch, look, burrow, nap or hearts."):format(what))
+            printError(("unknown test '%s'. Try hop, carrot, wash, scratch, stretch, look, burrow, nap, special or hearts."):format(what))
             return false
         end
         local ok, why = bunny():Perform(what)
-        if ok then
+        if ok and what == "special" then
+            ns.Print(("%s!"):format(bunny():GetSpecialLabel() or "special"))
+        elseif ok then
             ns.Print(what == "hop" and "hop!" or (what .. "!"))
         elseif why == "busy" then
             ns.Print("the bunny is mid-hop. Try again in a moment.")
@@ -473,6 +484,23 @@ Config.Handlers = {
             return false
         end
         ns.Print(("burrowing: %s (%s)."):format(ns.db.burrow and "on" or "off", ns.db.burrowFrequency))
+    end,
+    effects = function(rest)
+        local v = rest:lower()
+        if ON[v] or OFF[v] then
+            Config.Set("effects", ON[v] and true or false)
+            -- "off" also ends a special started with /bunny test special
+            if OFF[v] then bunny():CancelSpecial() end
+        elseif v == "rare" or v == "normal" or v == "often" then
+            Config.Set("effectsFrequency", v)
+            Config.Set("effects", true)
+        elseif v ~= "" then
+            printError("use /bunny effects, /bunny effects on|off or /bunny effects rare|normal|often.")
+            return false
+        end
+        ns.Print(("style effects: %s (%s). %s's special: %s - try /bunny test special."):format(
+            ns.db.effects and "on" or "off", ns.db.effectsFrequency,
+            ns.Appearance.CurrentVariation().label, bunny():GetSpecialLabel() or "none"))
     end,
     idle = function(rest)
         local v = rest:lower()

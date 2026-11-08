@@ -1,8 +1,8 @@
 -- BunnyBar: the bunny frame, sprite poses and the behaviour state machine.
 --
 -- One PRIMARY behaviour runs at a time (idle, hop, nap, an idle behaviour such
--- as eating a carrot, or burrowing). Secondary effects (hover hearts,
--- Hearts.lua) run independently and never change this state.
+-- as eating a carrot, burrowing, or the style's special). Secondary effects
+-- (hover hearts, Hearts.lua) run independently and never change this state.
 --
 -- Performance model
 --   * Waiting and every sprite-sequence step are driven by C_Timer, so
@@ -12,7 +12,9 @@
 --   * Sequences are data; callbacks are file-level functions (no per-frame
 --     tables or closures).
 --   * Everything stops when the frame is hidden (OnHide), including Alt+Z;
---     temporary textures (burrow holes) are cleaned up.
+--     temporary textures (burrow holes, special effects) are cleaned up.
+--   * Specials (SpecialData.lua) are pre-rendered frames flipped by the same
+--     C_Timer as every other sequence: no particles are simulated in game.
 
 local addonName, ns = ...
 local Util = ns.Util
@@ -41,6 +43,7 @@ Bunny.SHEETS = {
     groom  = { file = "bunny-groom.tga",  count = 11, slots = 16 },
     moves  = { file = "bunny-moves.tga",  count = 7,  slots = 8 },
     burrow = { file = "bunny-burrow.tga", count = 13, slots = 16 },
+    special = { file = "bunny-special.tga", count = 8, slots = 8 }, -- each style's own special
 }
 
 -- Burrow hole effect: (back, front) layers, shared by all styles, untinted.
@@ -82,6 +85,10 @@ Bunny.POSES = {
     burrowSink3 = { "burrow", 7 }, burrowSink4 = { "burrow", 8 },
     burrowEmerge1 = { "burrow", 9 }, burrowEmerge2 = { "burrow", 10 },
     burrowPop = { "burrow", 11 }, burrowShakeA = { "burrow", 12 }, burrowShakeB = { "burrow", 13 },
+    -- the style's special (SpecialData.lua says which frames each style uses)
+    special1 = { "special", 1 }, special2 = { "special", 2 }, special3 = { "special", 3 },
+    special4 = { "special", 4 }, special5 = { "special", 5 }, special6 = { "special", 6 },
+    special7 = { "special", 7 }, special8 = { "special", 8 },
 }
 
 -- Multi-frame sequences: { pose, seconds } in playback order. Not scaled by
@@ -169,6 +176,10 @@ Bunny.BEHAVIOR_CHANCE = 0.35 -- per decision: an idle behaviour instead of a hop
 Bunny.BURROW_CHANCE = 0.35   -- per decision, once the cooldown has passed
 -- Minimum seconds between burrows by frequency setting (and after login).
 Bunny.BURROW_COOLDOWN = { rare = 420, normal = 240, often = 120 }
+-- Style specials: at most once per cooldown (from login and from the last
+-- one), then on SPECIAL_CHANCE of decisions (scaled by personality/mood).
+Bunny.SPECIAL_CHANCE = 0.3
+Bunny.SPECIAL_COOLDOWN = { rare = 360, normal = 180, often = 90 }
 Bunny.BURROW_UNDERGROUND = 0.6 -- mirrored by BURROW_UNDERGROUND in the generator
 Bunny.BURROW_HOLE_OPEN = 0.25  -- mirrored by BURROW_HOLE_OPEN
 
@@ -179,6 +190,7 @@ Bunny.BURROW_HOLE_OPEN = 0.25  -- mirrored by BURROW_HOLE_OPEN
 local frame, sprite, backdrop, label
 local layers -- layered sprite textures (sprite == layers[1])
 local holes  -- burrow hole effect textures: holes.A / holes.B = { back, front }
+local fxTex  -- special effect textures { back, front } (created on first use)
 local db
 
 -- stopped | idle | prep | push | air | contact | land | recover |
@@ -196,17 +208,19 @@ local sleepUntil = 0
 local resumeSleepFor        -- seconds of nap left when hidden mid-nap
 local seq, seqIndex, seqDone, seqFx -- sequence player
 local burrow = { active = false, fromX = 0, toX = 0, underground = false, lastAt = nil }
+local special = { active = false, style = nil, steps = nil, index = 0, fx = 0, lastAt = nil }
 local spriteHidden = false
 
 local actionTimer, poseTimer
 local currentPose, currentFacing
 
-local stats = { hops = 0, journeys = 0, naps = 0, airTime = 0, since = nil, behaviors = {}, burrows = 0 }
+local stats = { hops = 0, journeys = 0, naps = 0, airTime = 0, since = nil, behaviors = {}, burrows = 0, specials = 0 }
 
 -- Forward declarations (mutually recursive state functions).
 local enterIdle, decideNext, enterSleep, lieDown, startBreath, breathEnd, startJourney
 local beginHop, pushOff, launch, touchDown, squash, afterLand, idleFidget, idleRestore, onUpdate
 local burrowDig, burrowSink, burrowUnder, burrowOpen, burrowEmerge, burrowShake, burrowDone
+local startSpecial, specialStep, specialDone
 
 ----------------------------------------------------------------------------
 -- Helpers
@@ -303,6 +317,62 @@ local function burrowCleanup()
     end
     if spriteHidden then setSpriteShown(true) end
     burrow.active, burrow.underground = false, false
+end
+
+----------------------------------------------------------------------------
+-- Special effects (pre-rendered, untinted; the style's own folder)
+----------------------------------------------------------------------------
+
+-- Two textures over the bunny's spot: the back layer under the bunny
+-- (BORDER), the front layer over it (OVERLAY). Each frame is FX.w x FX.h
+-- source pixels with the bunny's 32x32 frame bottom-centre in it, so it
+-- reaches above and beside the bunny but never below its feet.
+local function createFxTextures()
+    return {
+        back = frame:CreateTexture(nil, "BORDER", nil, 1),
+        front = frame:CreateTexture(nil, "OVERLAY", nil, 3),
+    }
+end
+
+local function showFxLayer(tex, l, r, t, b, w, h, left)
+    tex:SetTexCoord(l, r, t, b)
+    tex:SetSize(w, h)
+    tex:ClearAllPoints()
+    tex:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", left, 0)
+    tex:Show()
+end
+
+-- Show effect frame i (1-based) of the grid, or hide the effect (nil / 0).
+-- No tables or closures are created per step.
+local function setSpecialFx(i)
+    if not fxTex then return end
+    if not i or i == 0 then
+        fxTex.back:Hide()
+        fxTex.front:Hide()
+        special.fx = 0
+        return
+    end
+    local FX = ns.SpecialData.fx
+    local col, row = (i - 1) % FX.cols, math.floor((i - 1) / FX.cols)
+    local l, r = col * FX.w / FX.sheet, (col + 1) * FX.w / FX.sheet
+    local t, b = row * FX.h / FX.sheet / 2, (row + 1) * FX.h / FX.sheet / 2
+    if facing < 0 then l, r = r, l end -- mirrored with the bunny (the canvas is centred on it)
+    local k = db.size / 32
+    local w, h, left = FX.w * k, FX.h * k, Util.Round(x) - Util.Round(FX.offsetX * k)
+    showFxLayer(fxTex.back, l, r, t, b, w, h, left)
+    showFxLayer(fxTex.front, l, r, 0.5 + t, 0.5 + b, w, h, left)
+    special.fx = i
+end
+
+-- End a special immediately: hide the effect, bunny back on the ground.
+-- Nothing is saved, so /reload can never resume a half-played special.
+local function specialCleanup()
+    if fxTex then setSpecialFx(nil) end
+    special.active, special.steps, special.index, special.style = false, nil, 0, nil
+    if y ~= 0 then
+        y = 0
+        if frame and x then place() end
+    end
 end
 
 ----------------------------------------------------------------------------
@@ -429,6 +499,22 @@ end
 
 local startBurrow -- forward
 
+-- The current style's special, or nil (every registered style has one).
+local function specialData()
+    local data = ns.SpecialData
+    local id = ns.Appearance.CurrentVariation().id
+    return data and data[id], id
+end
+
+-- `forced` (/bunny test special) ignores the on/off setting and the cooldown.
+local function canSpecial(forced)
+    if not specialData() then return false end
+    if forced then return true end
+    if not db.effects then return false end
+    local cooldown = Bunny.SPECIAL_COOLDOWN[db.effectsFrequency] or Bunny.SPECIAL_COOLDOWN.normal
+    return GetTime() - (special.lastAt or stats.since or GetTime()) >= cooldown
+end
+
 -- The scheduler. Personality and mood only scale these chances, the idle
 -- wait and behaviour weights (Personality.lua); the number and order of
 -- random draws is the same as without them.
@@ -445,6 +531,12 @@ function decideNext()
     lastWasNap = false
     if canBurrow(false) and random() < chance(Bunny.BURROW_CHANCE, P.burrow) then
         startBurrow()
+        return
+    end
+    -- No random draw at all until the special's cooldown has passed, so the
+    -- rest of the scheduler behaves exactly as before in the meantime.
+    if canSpecial(false) and random() < chance(Bunny.SPECIAL_CHANCE, P.special) then
+        startSpecial()
         return
     end
     if db.idleExtras and random() < chance(Bunny.BEHAVIOR_CHANCE, P.behavior) then
@@ -509,11 +601,12 @@ end
 -- Get out of whatever we're doing (napping, an idle behaviour, a burrow)
 -- in a natural way, then call `done`.
 local function wakeThen(done)
-    if state == "drowsy" or state == "behavior" then
+    if state == "drowsy" or state == "behavior" or state == "special" then
         -- Upright poses: close enough to idle to cut straight to `done`.
         if actionTimer then actionTimer:Cancel(); actionTimer = nil end
         seq, seqDone, seqFx = nil, nil, nil
         currentBehavior = nil
+        specialCleanup()
         done()
     elseif state == "burrow" then
         cancelTimers()
@@ -697,6 +790,56 @@ function burrowDone()
 end
 
 ----------------------------------------------------------------------------
+-- Style specials: { pose, seconds, effect frame, lift } steps on one timer
+----------------------------------------------------------------------------
+
+function startSpecial()
+    local data, id = specialData()
+    if not data then return false end
+    cancelTimers()
+    if not fxTex then fxTex = createFxTextures() end
+    -- Only the selected style's effect sheet is loaded, and only when a
+    -- special plays.
+    local path = ns.Appearance.SheetPath(ns.SpecialData.fx.file)
+    if fxTex.path ~= path then
+        fxTex.back:SetTexture(path, "CLAMP", "CLAMP", "NEAREST")
+        fxTex.front:SetTexture(path, "CLAMP", "CLAMP", "NEAREST")
+        fxTex.path = path
+    end
+    special.active, special.style, special.steps, special.index = true, id, data.steps, 0
+    special.lastAt = GetTime()
+    stats.specials = stats.specials + 1
+    state = "special"
+    specialStep()
+    return true
+end
+
+function specialStep()
+    actionTimer = nil
+    special.index = special.index + 1
+    local step = special.steps and special.steps[special.index]
+    if not step then
+        specialDone()
+        return
+    end
+    setPose(step[1])
+    local lift = step[4] * db.size / 32
+    if lift ~= y then
+        y = lift
+        place()
+    end
+    if step[3] ~= special.fx then setSpecialFx(step[3]) end
+    schedule(step[2], specialStep)
+end
+
+-- Finished naturally: mood event, then idle.
+function specialDone()
+    specialCleanup()
+    ns.Personality.OnEvent("special")
+    enterIdle()
+end
+
+----------------------------------------------------------------------------
 -- Positioning
 ----------------------------------------------------------------------------
 
@@ -869,6 +1012,7 @@ function Bunny:Stop()
     seq, seqDone, seqFx = nil, nil, nil
     currentBehavior = nil
     burrowCleanup() -- x stays where the bunny currently is (start or end hole)
+    specialCleanup()
     y = 0
     state = "stopped"
     if frame and x then
@@ -880,7 +1024,16 @@ end
 -- Re-show the current pose (e.g. after the style changed). Doesn't restart
 -- or reset the current behaviour.
 function Bunny:RefreshAppearance()
-    if not frame or not currentPose then return end
+    if not frame then return end
+    -- A special belongs to the style it started with: if the style changed,
+    -- end it cleanly (no effect from the old style, no half pose) and idle.
+    if special.active and special.style ~= ns.Appearance.CurrentVariation().id then
+        cancelTimers()
+        specialCleanup()
+        enterIdle()
+        return
+    end
+    if not currentPose then return end
     local pose = currentPose
     currentPose = nil
     setPose(pose)
@@ -917,6 +1070,8 @@ local function runPending()
     elseif action == "nap" then
         lastWasNap = true
         enterSleep()
+    elseif action == "special" then
+        startSpecial()
     elseif Bunny.BEHAVIORS[action] then
         playBehavior(action)
     end
@@ -925,7 +1080,7 @@ end
 -- Perform an action now (used by /bunny test ...). Napping, idle behaviours
 -- and burrows end naturally first (waking / rising sequences). Returns
 -- false and a reason if it can't run right now.
---   action: "hop" | "carrot" | "wash" | "scratch" | "stretch" | "look" | "burrow" | "nap"
+--   action: "hop" | "carrot" | "wash" | "scratch" | "stretch" | "look" | "burrow" | "nap" | "special"
 function Bunny:Perform(action)
     if not frame or not frame:IsVisible() then return false, "hidden" end
     if HOPPING[state] then
@@ -933,6 +1088,7 @@ function Bunny:Perform(action)
         return false, "busy"
     end
     if action == "burrow" and not canBurrow(true) then return false, "track" end
+    if action == "special" and not canSpecial(true) then return false, "nostyle" end
     if state == "stopped" then self:Start() end
     pendingAction = action
     if state == "idle" then
@@ -996,6 +1152,8 @@ function Bunny:GetDebugState()
         burrowing = burrow.active, underground = burrow.underground, spriteHidden = spriteHidden,
         burrowFrom = burrow.fromX, burrowTo = burrow.toX,
         holeA = holes and holes.A.frame or nil, holeB = holes and holes.B.frame or nil,
+        special = special.active, specialStyle = special.style, specialFx = special.fx,
+        specials = stats.specials, specialStep = special.index,
     }
 end
 
@@ -1007,6 +1165,24 @@ end
 
 function Bunny:GetHoles()
     return holes
+end
+
+function Bunny:GetSpecialTextures()
+    return fxTex
+end
+
+-- Label of the current style's special (e.g. "Carrot Celebration").
+function Bunny:GetSpecialLabel()
+    local data = specialData()
+    return data and data.label
+end
+
+-- Effects switched off mid-special: end it now rather than finish it.
+function Bunny:CancelSpecial()
+    if state ~= "special" then return end
+    cancelTimers()
+    specialCleanup()
+    enterIdle()
 end
 
 local function getMemoryKB()
@@ -1035,7 +1211,8 @@ function Bunny:GetStats()
         self:IsAutoPositioned() and "auto (above action bar)" or "custom")
     local b = {}
     for _, name in ipairs(Bunny.BEHAVIOR_ORDER) do b[#b + 1] = ("%s %d"):format(name, s.behaviors[name] or 0) end
-    lines[#lines + 1] = ("hops: %d in %d journeys | naps: %d | burrows: %d"):format(s.hops, s.journeys, s.naps, s.burrows)
+    lines[#lines + 1] = ("hops: %d in %d journeys | naps: %d | burrows: %d | specials: %d"):format(
+        s.hops, s.journeys, s.naps, s.burrows, s.specials)
     lines[#lines + 1] = "behaviours: " .. table.concat(b, ", ")
     if s.since then
         local session = max(GetTime() - s.since, 0.001)

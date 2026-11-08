@@ -35,6 +35,10 @@ ADDON_DIR = ROOT / "addon" / ADDON_NAME
 EXPECTED_INTERFACE = "16001"  # WoW Forever (client 1.60.x)
 FRAME = 32
 MAX_TEXTURE_BYTES = 160 * 1024
+# Special-effect sheets (SpecialData.lua): a 256 x 256 grid per layer, two
+# layers, uncompressed 32-bit = 512 KB + header. Only the selected style's
+# sheet is ever loaded, and only once its special plays.
+MAX_GRID_BYTES = 256 * 512 * 4 + 1024
 
 
 @dataclass
@@ -275,6 +279,7 @@ def is_pow2(n: int) -> bool:
 
 _DECL = re.compile(r'\{\s*file\s*=\s*"([\w-]+\.tga)"([^{}]*)\}')
 _KV = re.compile(r'(\w+)\s*=\s*(true|false|\d+)')
+_FXFRAMES = re.compile(r'^\s{4}(\w+)\s*=\s*\{\s*\n\s*label\s*=\s*"[^"]*",\s*fxFrames\s*=\s*(\d+)', re.M)
 
 
 def texture_declarations(addon_dir: Path = ADDON_DIR):
@@ -298,7 +303,8 @@ def texture_declarations(addon_dir: Path = ADDON_DIR):
             decls[m.group(1)] = {
                 "count": count, "slots": kv.get("slots", count), "height": kv.get("height", FRAME),
                 "layers": kv.get("layers", 2), "fx": kv.get("fx", False),
-                "styled": m.group(0) in sheets_block,
+                "styled": m.group(0) in sheets_block or kv.get("styled", False),
+                "grid": kv if kv.get("grid") else None,
             }
     return decls
 
@@ -314,7 +320,7 @@ def texture_references(addon_dir: Path = ADDON_DIR):
     refs = {}
     styles = style_ids(addon_dir)
     for name, d in texture_declarations(addon_dir).items():
-        spec = (d["count"], d["slots"], d["height"], d["layers"], d["fx"])
+        spec = ("grid", d["grid"]) if d["grid"] else (d["count"], d["slots"], d["height"], d["layers"], d["fx"])
         refs[name] = spec
         if d["styled"]:
             for sid in styles:
@@ -336,17 +342,72 @@ def composite(fur, detail):
     return (0, 0, 0, 0)
 
 
+def special_frame_counts(addon_dir: Path = ADDON_DIR):
+    """style -> number of effect frames, from SpecialData.lua."""
+    path = addon_dir / "SpecialData.lua"
+    if not path.exists():
+        return {}
+    return {sid: int(n) for sid, n in _FXFRAMES.findall(path.read_text(encoding="utf-8"))}
+
+
+def check_grid_texture(r: Report, name, grid, addon_dir: Path = ADDON_DIR):
+    """A special-effect sheet: grid of w x h frames, back layer on top, front
+    layer below; transparent padding; nothing on a frame's bottom row (effects
+    never reach below the bunny's feet)."""
+    path = addon_dir / "Textures" / name
+    w, h, bpp, alpha, top_left, rows = read_tga(path)
+    sheet, fw, fh, cols = grid["sheet"], grid["w"], grid["h"], grid["cols"]
+    r.check(alpha == 8, f"textures: {name} has 8-bit alpha", str(alpha))
+    r.check(is_pow2(w) and is_pow2(h) and (w, h) == (sheet, 2 * sheet),
+            f"textures: {name} is a {sheet}x{2 * sheet} effect grid", f"{w}x{h}")
+    r.check(path.stat().st_size <= MAX_GRID_BYTES, f"textures: {name} is within the effect-sheet budget",
+            f"{path.stat().st_size} bytes")
+    if (w, h) != (sheet, 2 * sheet):
+        return
+    style = name.split("/")[0] if "/" in name else "classic"
+    n = special_frame_counts(addon_dir).get(style, 0)
+    r.check(0 < n <= cols * cols, f"textures: {name} has 1..{cols * cols} effect frames", str(n))
+
+    def cell(i, layer):
+        cx, cy = (i % cols) * fw, layer * sheet + (i // cols) * fh
+        return [rows[cy + y][cx:cx + fw] for y in range(fh)]
+
+    drawn = 0
+    for i in range(cols * cols):
+        both = cell(i, 0) + cell(i, 1)
+        opaque = sum(1 for row in both for p in row if p[3])
+        if i >= n:
+            r.check(opaque == 0, f"textures: {name} unused effect cell {i + 1} is empty")
+            continue
+        drawn += opaque > 0
+        bottom = [p for layer in (0, 1) for p in cell(i, layer)[fh - 1] if p[3]]
+        r.check(not bottom, f"textures: {name} frame {i + 1} stays above the bunny's feet")
+        corners = [cell(i, layer)[y][x] for layer in (0, 1) for y in (0, fh - 1) for x in (0, fw - 1)]
+        r.check(all(c[3] == 0 for c in corners), f"textures: {name} frame {i + 1} has a transparent background")
+    r.check(drawn >= n - 2, f"textures: {name} effect frames have art", f"{drawn}/{n}")
+    outside = sum(1 for y in range(h) for x in range(cols * fw, w) if rows[y][x][3]) + \
+        sum(1 for layer in (0, 1) for y in range(layer * sheet + cols * fh, (layer + 1) * sheet) for p in rows[y] if p[3])
+    r.check(outside == 0, f"textures: {name} has nothing outside the grid")
+
+
 def check_textures(r: Report, addon_dir: Path = ADDON_DIR):
     refs = texture_references(addon_dir)
     r.check(len(refs) >= 4, "textures: Lua declares sprite sheets", str(len(refs)))
     styles = style_ids(addon_dir)
     r.check("classic" in styles and len(styles) >= 1, "textures: classic style registered", str(styles))
     tex_dir = addon_dir / "Textures"
-    for name, (count, slots, fh, nlayers, fx) in sorted(refs.items()):
+    for name, spec in sorted(refs.items()):
         path = tex_dir / name
         if not r.check(exists_exact_case(tex_dir, name) if tex_dir.exists() else False,
                        f"textures: {name} exists"):
             continue
+        if spec[0] == "grid":
+            try:
+                check_grid_texture(r, name, spec[1], addon_dir)
+            except ValueError as exc:
+                r.check(False, f"textures: {name} is a valid TGA", str(exc))
+            continue
+        count, slots, fh, nlayers, fx = spec
         try:
             w, h, bpp, alpha, top_left, rows = read_tga(path)
         except ValueError as exc:

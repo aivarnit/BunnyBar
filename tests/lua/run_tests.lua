@@ -257,7 +257,7 @@ end)
 test("ten simulated minutes: bounded, smooth, flips, rests, mostly idle", function()
     math.randomseed(42)
     -- Balanced without moods = the exact v0.3 scheduler (moods vary waits).
-    local ns2 = boot({ schema = 5, moods = false }) -- schema set: keeps the size-64 default
+    local ns2 = boot({ schema = 6, moods = false, effects = false }) -- schema set: keeps the size-64 default
     local B = ns2.Bunny
     local db = BunnyBarDB
     local minX, maxX = ns2.Util.TrackBounds(db.trackWidth, db.size)
@@ -1346,7 +1346,7 @@ test("v0.1 settings are preserved, new keys get defaults", function()
         point = "BOTTOM", relativePoint = "BOTTOM", x = 15, y = 300 }
     boot(old)
     local db = BunnyBarDB
-    eq(db.schema, 5)
+    eq(db.schema, 6)
     for k, v in pairs(old) do if k ~= "schema" then eq(db[k], v, k) end end
     eq(db.furColor, nil, "no override"); eq(ns.Config.FurColor(db), "F6F3FA"); eq(db.variation, "classic"); eq(db.hat, "none")
     eq(db.earsPlayer, true); eq(db.earsParty, true)
@@ -1418,7 +1418,7 @@ test("colour stays applied through every animation and sheet change", function()
     local fur, detail = bunnyLayers()
     local sheets, poses = {}, {}
     -- Make sure the rarer sheets show up whatever the random sequence.
-    for i, what in ipairs({ "burrow", "carrot", "wash", "stretch", "nap" }) do
+    for i, what in ipairs({ "burrow", "carrot", "wash", "stretch", "nap", "special" }) do
         C_Timer.After(40 * i, function() slash("test " .. what) end)
     end
     mock.advance(400, 1 / 30, function()
@@ -1430,7 +1430,7 @@ test("colour stays applied through every animation and sheet change", function()
     end)
     local n = 0
     for _ in pairs(sheets) do n = n + 1 end
-    eq(n, 9, "all nine sheets shown")
+    eq(n, 10, "all ten sheets shown (incl. the style special)")
     for _, p in ipairs({ "blink", "jump", "land", "sleep2", "wake3", "drowsy2" }) do truthy(poses[p], p) end
 end)
 
@@ -2711,7 +2711,7 @@ end)
 test("schema 2 settings migrate to 3 with behaviour and heart defaults", function()
     boot({ schema = 2, size = 96, furColor = "112233", variation = "classic", earsParty = false, speed = 1.5 })
     local db = BunnyBarDB
-    eq(db.schema, 5); eq(db.size, 96); eq(db.furColor, "112233"); eq(db.earsParty, false); eq(db.speed, 1.5)
+    eq(db.schema, 6); eq(db.size, 96); eq(db.furColor, "112233"); eq(db.earsParty, false); eq(db.speed, 1.5)
     eq(db.idleExtras, true); eq(db.carrot, true); eq(db.burrow, true); eq(db.burrowFrequency, "normal")
     eq(db.hearts, true); eq(db.heartIntensity, "normal"); eq(db.variation, "classic")
     boot({ schema = 3, burrowFrequency = "SOMETIMES", heartIntensity = "EXTRA", variation = "Devil" })
@@ -3060,7 +3060,7 @@ test("older saves: a stored style default becomes 'no override', custom colours 
     for i, case in ipairs(cases) do
         local ns2 = boot(case[1])
         eq(BunnyBarDB.furColor, case[2], "case " .. i)
-        eq(BunnyBarDB.schema, 5)
+        eq(BunnyBarDB.schema, 6)
     end
 end)
 
@@ -3232,7 +3232,7 @@ test("personality: default Balanced, slash selection, validation, persistence", 
 end)
 
 test("Balanced without moods is exactly the v0.3 scheduler", function()
-    local ns2 = boot({ schema = 5, moods = false })
+    local ns2 = boot({ schema = 6, moods = false, effects = false })
     local P = ns2.Personality.Params()
     eq(P.nap, 1); eq(P.burrow, 1); eq(P.behavior, 1); eq(P.wait, 1); eq(P.sleep, 1); eq(P.wakeStretch, 0)
     for _, name in ipairs(ns2.Bunny.BEHAVIOR_ORDER) do eq(P.weights[name], 1, name) end
@@ -3472,7 +3472,7 @@ test("schema 4 saves migrate without touching appearance, ears, colour or positi
         earsParty = true, point = "BOTTOM", relativePoint = "BOTTOM", x = -40, y = 300, hearts = false }
     local ns2 = boot(old, { setup = function() mkParty(1) end })
     local db = BunnyBarDB
-    eq(db.schema, 5); eq(db.personality, "balanced"); eq(db.moods, true)
+    eq(db.schema, 6); eq(db.personality, "balanced"); eq(db.moods, true)
     for k, v in pairs(old) do if k ~= "schema" then eq(db[k], v, k) end end
     eq(ns2.Ears.GetState().player.shown, false); eq(ns2.Ears.GetState().party1.shown, true)
     boot({ schema = 5, personality = "Grumpy", moods = "yes" })
@@ -3541,6 +3541,432 @@ end)
 
 ----------------------------------------------------------------------------
 -- Hygiene
+----------------------------------------------------------------------------
+
+io.write("v0.5 style specials\n")
+
+local STYLE_IDS = { "classic", "devil", "angel", "dragon", "zombie" }
+local TEX = "Interface\\AddOns\\BunnyBar\\Textures\\"
+
+local function bootStyle(style, extra, opts)
+    local saved = { schema = 6, variation = style or "classic", moods = false, hearts = false }
+    for k, v in pairs(extra or {}) do saved[k] = v end
+    local ns2 = boot(saved, opts)
+    mock.advance(1.05)
+    return ns2
+end
+
+-- Record (pose, effect frame, lift) at every change until the bunny is idle again.
+local function specialRun(ns2, limit)
+    local log, prev, t0, sawUpdate = {}, nil, mock.now, false
+    while true do
+        local s = ns2.Bunny:GetDebugState()
+        local key = ("%s|%s|%s"):format(tostring(s.pose), tostring(s.specialFx), tostring(s.y))
+        if s.onUpdate then sawUpdate = true end
+        if key ~= prev then
+            log[#log + 1] = { pose = s.pose, fx = s.specialFx, y = s.y, state = s.state, at = mock.now - t0 }
+            prev = key
+        end
+        if s.state == "idle" and #log > 1 then break end
+        if mock.now - t0 > (limit or 10) then error("special never finished") end
+        mock.advance(1 / 120)
+    end
+    return log, sawUpdate
+end
+
+-- SpecialData steps with consecutive identical (pose, fx, lift) merged.
+local function expectedSteps(ns2, style)
+    local out, t = {}, 0
+    for _, st in ipairs(ns2.SpecialData[style].steps) do
+        local last = out[#out]
+        if not (last and last.pose == st[1] and last.fx == st[3] and last.lift == st[4]) then
+            out[#out + 1] = { pose = st[1], fx = st[3], lift = st[4], at = t }
+        end
+        t = t + st[2]
+    end
+    return out, t
+end
+
+local function fxPath(style, file)
+    return TEX .. (style == "classic" and "" or style .. "\\") .. file
+end
+
+local function playSpecialTo(ns2, fxFrame)
+    eq(slash("test special"), true, "/bunny test special")
+    advanceUntil(ns2, function(s) return s.specialFx == fxFrame end, 5)
+end
+
+test("five specials: each style plays its own steps, effect frames and timing, then idles", function()
+    local labels = {}
+    for _, style in ipairs(STYLE_IDS) do
+        local ns2 = bootStyle(style)
+        local data = ns2.SpecialData[style]
+        truthy(data and data.label, style .. " has a special")
+        labels[data.label] = true
+        local x0 = ns2.Bunny:GetDebugState().x
+        eq(slash("test special"), true)
+        truthy(lastChat():find(data.label, 1, true), lastChat())
+        local log, sawUpdate = specialRun(ns2)
+        local want, total = expectedSteps(ns2, style)
+        eq(#log - 1, #want, style .. ": step count")
+        local k = BunnyBarDB.size / 32
+        local seen = {}
+        for i, w in ipairs(want) do
+            eq(log[i].pose, w.pose, style .. " step " .. i .. " pose")
+            eq(log[i].fx, w.fx, style .. " step " .. i .. " effect frame")
+            near(log[i].y, w.lift * k, 1e-9, style .. " step " .. i .. " lift")
+            near(log[i].at, w.at, 0.02, style .. " step " .. i .. " time")
+            eq(log[i].state, "special")
+            if w.fx > 0 then seen[#seen + 1] = w.fx end
+        end
+        for i = 1, data.fxFrames do eq(seen[i], i, style .. ": effect frames in order") end
+        near(log[#log].at, total, 0.02, style .. ": duration")
+        near(total, data.duration, 1e-6)
+        truthy(total >= 2 and total <= 3.5, style .. " lasts 2-3.5 s: " .. total)
+        local s = ns2.Bunny:GetDebugState()
+        eq(s.state, "idle"); eq(s.special, false); eq(s.specialFx, 0); eq(s.y, 0); eq(s.x, x0, "no movement")
+        eq(s.specials, 1)
+        eq(sawUpdate, false, style .. ": no OnUpdate during the special")
+        local fx = ns2.Bunny:GetSpecialTextures()
+        eq(fx.back:IsShown(), false); eq(fx.front:IsShown(), false)
+    end
+    local n = 0
+    for _ in pairs(labels) do n = n + 1 end
+    eq(n, 5, "five distinct specials")
+end)
+
+test("special textures: the selected style's own sheets; every requested file exists", function()
+    for _, style in ipairs(STYLE_IDS) do
+        local ns2 = bootStyle(style)
+        playSpecialTo(ns2, 3)
+        local fx = ns2.Bunny:GetSpecialTextures()
+        eq(fx.back._texture, fxPath(style, "bunny-special-fx.tga"), style .. " effect sheet")
+        eq(fx.front._texture, fx.back._texture)
+        eq(fx.back._filter, "NEAREST"); eq(fx.front._filter, "NEAREST")
+        local fur, detail = bunnyLayers()
+        eq(fur._texture, fxPath(style, "bunny-special.tga"), style .. " body sheet")
+        eq(detail._texture, fur._texture)
+        eq(fx.back._vertex, nil, "effects are never tinted"); eq(fx.front._vertex, nil)
+        local r, g, b = fur:GetVertexColor()
+        near(r * 255, tonumber(ns2.Config.FurColor():sub(1, 2), 16), 0.6, "fur still tinted during the special")
+        specialRun(ns2)
+    end
+    -- Everything the addon asked for in this run exists, and shared art is
+    -- never looked up in a style folder (the v0.3 portrait-ear regression).
+    for path in pairs(mock.texturePaths) do
+        truthy(textureExists(path), "missing texture: " .. path)
+        for _, shared in ipairs({ "bunny-ears.tga", "bunny-heart.tga", "bunny-burrow-fx.tga", "bunny-icon.tga" }) do
+            if path:find(shared, 1, true) then eq(path, TEX .. shared, "shared texture path") end
+        end
+    end
+end)
+
+test("effect layers: behind and in front of the bunny, sized, placed and mirrored with it", function()
+    local ns2 = bootStyle("dragon", { size = 48 })
+    local fur, detail = bunnyLayers()
+    playSpecialTo(ns2, 7)
+    local fx = ns2.Bunny:GetSpecialTextures()
+    eq(fx.back._layer, "BORDER"); eq(fx.front._layer, "OVERLAY")
+    eq(fur._layer, "ARTWORK"); truthy(fx.front._sublevel > detail._sublevel)
+    local FX, k = ns2.SpecialData.fx, 48 / 32
+    eq(fx.back:GetWidth(), FX.w * k); eq(fx.back:GetHeight(), FX.h * k)
+    local s = ns2.Bunny:GetDebugState()
+    local point, rel, relPoint, px, py = fx.back:GetPoint(1)
+    eq(point, "BOTTOMLEFT"); eq(rel, ns2.Bunny:GetFrame()); eq(relPoint, "BOTTOMLEFT")
+    eq(px, ns2.Util.Round(s.x) - ns2.Util.Round(FX.offsetX * k), "centred on the bunny")
+    eq(py, 0, "on the ground: nothing hangs below the bunny's feet")
+    -- frame 7 = column 2, row 2 of the 5 x 5 grid; back layer top half, front bottom half
+    local l, r, t, b = fx.back:GetTexCoord()
+    local fl, fr, ft, fb = fx.front:GetTexCoord()
+    near(t, 48 / 256 / 2); near(b, 96 / 256 / 2); near(ft, 0.5 + t); near(fb, 0.5 + b)
+    local mirrored = s.facing < 0
+    near(math.min(l, r), 48 / 256); near(math.max(l, r), 96 / 256)
+    eq(l > r, mirrored, "mirrored exactly when the bunny faces left")
+    eq(fl, l); eq(fr, r)
+    eq(ns2.Bunny:GetFrame():IsMouseEnabled(), false, "still click-through")
+end)
+
+test("mirroring: a left-facing bunny gets a left-facing effect", function()
+    local ns2 = bootStyle("dragon", { idleExtras = false, burrow = false, sleepChance = 0, effects = false })
+    -- hop until the bunny faces left, then sneeze
+    for _ = 1, 20 do
+        if ns2.Bunny:GetDebugState().facing < 0 then break end
+        slash("test hop")
+        advanceUntil(ns2, function(s) return s.state == "idle" end, 10)
+    end
+    eq(ns2.Bunny:GetDebugState().facing, -1, "facing left")
+    playSpecialTo(ns2, 9)
+    local l, r = ns2.Bunny:GetSpecialTextures().back:GetTexCoord()
+    truthy(l > r, "texcoords swapped")
+    local fur = bunnyLayers()
+    local bl, br = fur:GetTexCoord()
+    truthy(bl > br, "bunny mirrored too")
+end)
+
+test("hiding, Alt+Z, reset, size change, style change and effects off all end a special cleanly", function()
+    local ways = {
+        hide = function() slash("hide") end,
+        altz = function() UIParent:Hide() end,
+        reset = function() slash("reset") end,
+        size = function() slash("size 48") end,
+        style = function() slash("style zombie") end,
+        effectsOff = function() slash("effects off") end,
+        hop = function() slash("test hop") end,
+        nap = function() slash("test nap") end,
+    }
+    for name, act in pairs(ways) do
+        for _, at in ipairs({ 1, 9, 20 }) do
+            local ns2 = bootStyle("angel")
+            local events = 0
+            local orig = ns2.Personality.OnEvent
+            ns2.Personality.OnEvent = function(e) if e == "special" then events = events + 1 end return orig(e) end
+            playSpecialTo(ns2, at)
+            act()
+            local label = name .. " at frame " .. at
+            local s = ns2.Bunny:GetDebugState()
+            eq(s.special, false, label .. ": special ended")
+            eq(s.specialFx, 0, label .. ": effect hidden")
+            truthy(s.state ~= "special", label .. ": state " .. s.state)
+            local fx = ns2.Bunny:GetSpecialTextures()
+            eq(fx.back:IsShown(), false, label); eq(fx.front:IsShown(), false, label)
+            if s.state ~= "air" and s.state ~= "prep" and s.state ~= "push" then eq(s.y, 0, label .. ": back on the ground") end
+            mock.advance(5, 1 / 30)
+            s = ns2.Bunny:GetDebugState()
+            truthy(s.state ~= "special" or s.specialStep <= 2, label .. ": the old special never resumes")
+            eq(events, 0, label .. ": no mood event for an interrupted special")
+            if name == "hide" or name == "altz" then
+                eq(mock.pendingTimers(), 0, label .. ": nothing scheduled while hidden")
+                if name == "hide" then slash("show") else UIParent:Show() end
+                s = ns2.Bunny:GetDebugState()
+                eq(s.state, "idle", label .. ": shown again idle, not mid-special")
+                eq(fx.back:IsShown(), false)
+            end
+        end
+    end
+end)
+
+test("/reload mid-special never restores a half-played effect", function()
+    local ns2 = bootStyle("devil")
+    playSpecialTo(ns2, 10)
+    local saved = BunnyBarDB
+    for k, v in pairs(saved) do
+        local tv = type(v)
+        truthy(tv == "number" or tv == "string" or tv == "boolean", "plain settings only: " .. k)
+    end
+    local ns3 = boot(saved)
+    mock.advance(1.05)
+    local s = ns3.Bunny:GetDebugState()
+    eq(s.special, false); eq(s.specialFx, 0); eq(s.state, "idle"); eq(s.y, 0)
+    eq(ns3.Bunny:GetSpecialTextures(), nil, "no effect textures until a special plays")
+end)
+
+test("style change mid-special ends it; colour change does not", function()
+    local ns2 = bootStyle("classic")
+    playSpecialTo(ns2, 5)
+    eq(slash("color #87CEEB"), true)
+    local s = ns2.Bunny:GetDebugState()
+    eq(s.state, "special", "colour change keeps playing"); eq(s.specialFx, 5)
+    advanceUntil(ns2, function(st) return st.specialFx == 8 end, 3)
+    eq(slash("style dragon"), true)
+    s = ns2.Bunny:GetDebugState()
+    eq(s.state, "idle"); eq(s.special, false); eq(s.specialFx, 0)
+    local fur = bunnyLayers()
+    eq(fur._texture, TEX .. "dragon\\bunny-idle.tga", "new style's idle pose")
+    playSpecialTo(ns2, 2)
+    eq(ns2.Bunny:GetDebugState().specialStyle, "dragon")
+    eq(ns2.Bunny:GetSpecialTextures().back._texture, fxPath("dragon", "bunny-special-fx.tga"), "only the new style's effect")
+    eq(BunnyBarDB.furColor, "87CEEB", "custom colour kept")
+end)
+
+test("a special completes into one mood event; moods and personalities scale its chance", function()
+    local ns2 = bootStyle("zombie", { moods = true })
+    local events = {}
+    local orig = ns2.Personality.OnEvent
+    ns2.Personality.OnEvent = function(e) events[#events + 1] = e return orig(e) end
+    slash("test special")
+    specialRun(ns2)
+    eq(table.concat(events, ","), "special")
+    eq(ns2.Personality.GetState().lastEvent, "special")
+    local want = { balanced = 1, lazy = 0.7, energetic = 1.2, playful = 1.5, sleepy = 0.6 }
+    BunnyBarDB.moods = false
+    for id, m in pairs(want) do
+        BunnyBarDB.personality = id
+        near(ns2.Personality.Params().special, m, 1e-9, id)
+    end
+    BunnyBarDB.moods, BunnyBarDB.personality = true, "playful"
+    ns2.Personality.SetMood("playful")
+    near(ns2.Personality.Params().special, 1.5 * 1.4, 1e-9, "playful + playful mood")
+    near(ns2.Personality.Chance(ns2.Bunny.SPECIAL_CHANCE, 1), 0.3)
+    truthy(ns2.Personality.Chance(ns2.Bunny.SPECIAL_CHANCE, 9) <= 0.9, "capped")
+    eq(slash("mood debug"), true)
+    local found = false
+    for _, line in ipairs(mock.chat) do if line:find("special %d+%% %(after cooldown%)") then found = true end end
+    truthy(found, "mood debug lists the special chance")
+end)
+
+test("effects setting: off means no specials, on means rare ones; test special always works", function()
+    local function count(extra, minutes, seed)
+        math.randomseed(seed or 77)
+        local saved = { schema = 6, moods = false, hearts = false }
+        for k, v in pairs(extra) do saved[k] = v end
+        local ns2 = boot(saved)
+        local starts, prevSpecial = {}, false
+        mock.advance(minutes * 60, 1 / 10, function()
+            local sp = ns2.Bunny:GetDebugState().special
+            if sp and not prevSpecial then starts[#starts + 1] = mock.now end
+            prevSpecial = sp
+        end)
+        return starts, ns2
+    end
+    local off = count({ effects = false }, 30)
+    eq(#off, 0, "effects off: none in 30 minutes")
+    local runs = {}
+    for _, freq in ipairs({ "rare", "normal", "often" }) do
+        local starts = count({ effectsFrequency = freq }, 30)
+        runs[freq] = #starts
+        local cd = ({ rare = 360, normal = 180, often = 90 })[freq]
+        truthy(#starts >= 1, freq .. ": at least one in 30 minutes")
+        truthy(#starts <= math.floor(1800 / cd) + 1, freq .. ": at most one per cooldown, got " .. #starts)
+        for i = 2, #starts do truthy(starts[i] - starts[i - 1] >= cd, freq .. ": cooldown respected") end
+        truthy(starts[1] >= cd, freq .. ": not before the first cooldown after login")
+    end
+    truthy(runs.rare < runs.often, ("rare %d < often %d"):format(runs.rare, runs.often))
+    -- effects off: /bunny test special still plays it (like /bunny test burrow)
+    local ns2 = bootStyle("classic", { effects = false })
+    eq(slash("test special"), true)
+    eq(ns2.Bunny:GetDebugState().state, "special")
+    -- switching effects off mid-special ends it now
+    eq(slash("effects off"), true)
+    eq(ns2.Bunny:GetDebugState().state, "idle")
+end)
+
+test("/bunny effects: show, on/off, frequency, validation, persistence", function()
+    local ns2 = bootStyle("angel")
+    eq(slash("effects"), true)
+    truthy(lastChat():find("style effects: on %(normal%)"), lastChat())
+    truthy(lastChat():find("Heavenly Blessing", 1, true), lastChat())
+    eq(slash("effects off"), true); eq(BunnyBarDB.effects, false)
+    truthy(lastChat():find("style effects: off"), lastChat())
+    eq(slash("effects often"), true); eq(BunnyBarDB.effectsFrequency, "often"); eq(BunnyBarDB.effects, true)
+    eq(slash("effects RARE"), true); eq(BunnyBarDB.effectsFrequency, "rare")
+    eq(slash("effects sometimes"), false)
+    truthy(lastChat():find("use /bunny effects"), lastChat())
+    eq(BunnyBarDB.effectsFrequency, "rare", "unchanged after bad input")
+    eq(ns2.Config.Set("effectsFrequency", "hourly"), false)
+    local saved = BunnyBarDB
+    boot(saved)
+    eq(BunnyBarDB.effects, true); eq(BunnyBarDB.effectsFrequency, "rare", "persists across /reload")
+    local seen = false
+    slash("")
+    for _, line in ipairs(mock.chat) do if line:find("/bunny effects") then seen = true end end
+    truthy(seen, "listed in /bunny help")
+end)
+
+test("schema 5 saves migrate to 6 with effects on, everything else untouched", function()
+    local old = {
+        schema = 5, size = 96, variation = "dragon", furColor = "112233", earsParty = false,
+        personality = "lazy", moods = false, burrowFrequency = "rare", hearts = false,
+        point = "BOTTOM", relativePoint = "BOTTOM", x = 10, y = 120,
+    }
+    local ns2 = boot(old)
+    local db = BunnyBarDB
+    eq(db.schema, 6); eq(db.effects, true); eq(db.effectsFrequency, "normal")
+    eq(db.size, 96); eq(db.variation, "dragon"); eq(db.furColor, "112233"); eq(db.earsParty, false)
+    eq(db.personality, "lazy"); eq(db.moods, false); eq(db.burrowFrequency, "rare"); eq(db.hearts, false)
+    eq(db.point, "BOTTOM"); eq(db.x, 10); eq(db.y, 120)
+    local repaired = ns2.Config.Sanitize({ schema = 6, effects = "yes", effectsFrequency = "sometimes" })
+    eq(repaired.effects, true); eq(repaired.effectsFrequency, "normal")
+    eq(ns2.Config.Sanitize({ schema = 6, effectsFrequency = "OFTEN" }).effectsFrequency, "often")
+end)
+
+test("specials never start mid-hop, while hidden, or on top of another special", function()
+    local ns2 = bootStyle("classic", { idleExtras = false, burrow = false, sleepChance = 0 })
+    slash("test hop")
+    advanceUntil(ns2, function(s) return s.state == "air" end, 3)
+    local ok, why = ns2.Bunny:Perform("special")
+    eq(ok, false); eq(why, "busy")
+    advanceUntil(ns2, function(s) return s.state == "idle" end, 10)
+    -- a nap is woken properly first, then the special plays
+    slash("test nap")
+    advanceUntil(ns2, function(s) return s.state == "sleep" end, 10)
+    eq(slash("test special"), true)
+    eq(ns2.Bunny:GetDebugState().state, "waking")
+    advanceUntil(ns2, function(s) return s.state == "special" end, 3)
+    -- test special again mid-special restarts it cleanly from step 1
+    advanceUntil(ns2, function(s) return s.specialFx == 6 end, 3)
+    slash("test special")
+    local s = ns2.Bunny:GetDebugState()
+    eq(s.state, "special"); eq(s.specialStep, 1); eq(s.specials, 2)
+    slash("hide")
+    ok, why = ns2.Bunny:Perform("special")
+    eq(ok, false); eq(why, "hidden")
+end)
+
+test("no per-frame work and one timer while a special plays", function()
+    local ns2 = bootStyle("zombie", { idleExtras = false, burrow = false, sleepChance = 0 })
+    slash("test special")
+    local maxTimers, onUpdate = 0, false
+    while ns2.Bunny:GetDebugState().state == "special" do
+        maxTimers = math.max(maxTimers, mock.pendingTimers())
+        if ns2.Bunny:GetDebugState().onUpdate then onUpdate = true end
+        mock.advance(1 / 60)
+    end
+    eq(onUpdate, false, "no OnUpdate")
+    eq(maxTimers, 1, "a single step timer")
+    -- idle afterwards: the usual two (next decision, idle fidget)
+    truthy(mock.pendingTimers() <= 2, "idle timers: " .. mock.pendingTimers())
+    eq(ns2.Bunny:GetDebugState().onUpdate, false)
+end)
+
+test("hover hearts keep working during specials and follow the angel's lift", function()
+    local ns2 = bootStyle("angel", { hearts = true, idleExtras = false, burrow = false, sleepChance = 0 })
+    local _, _, b0 = ns2.Bunny:GetSpriteBox()
+    slash("test special")
+    advanceUntil(ns2, function(s) return s.y > 0 end, 2)
+    local lift = ns2.Bunny:GetDebugState().y
+    local _, _, b1 = ns2.Bunny:GetSpriteBox()
+    truthy(b1 > b0, "hit box rises with the bunny")
+    mock.cursor[1], mock.cursor[2] = pointAt(ns2, 0.5, 0.5)
+    mock.advance(1, 1 / 60)
+    truthy(ns2.Hearts.GetState().emitted >= 1, "hearts while floating")
+    eq(ns2.Bunny:GetDebugState().state, "special", "hovering never interrupts it")
+    truthy(lift > 0)
+end)
+
+test("panel: Style-Specific Effects checkbox and frequency, synced both ways, inside its section", function()
+    local ns2, c = bootPanel({ schema = 6 })
+    eq(c.behaviors.effects:GetChecked(), true)
+    eq(c.effectsFrequency[2]:GetChecked(), true, "Normal by default")
+    c.effectsFrequency[3]:Click()
+    eq(BunnyBarDB.effectsFrequency, "often")
+    c.behaviors.effects:Click()
+    eq(BunnyBarDB.effects, false)
+    slash("effects rare")
+    eq(BunnyBarDB.effects, true)
+    eq(c.behaviors.effects:GetChecked(), true, "slash -> panel")
+    eq(c.effectsFrequency[1]:GetChecked(), true)
+    local L = ns2.Options.layout.behaviors
+    for _, w in ipairs({ c.behaviors.effects, c.effectsFrequency[1], c.effectsFrequency[3] }) do
+        local _, _, _, wx, wy = w:GetPoint(1)
+        truthy(wy <= L.top and wy >= L.bottom, "inside the Behaviors section")
+    end
+end)
+
+test("portrait ears and the main bunny are unchanged by specials (shared paths)", function()
+    local ns2 = bootStyle("devil", { earsPlayer = true }, { setup = function() mkPlayer(100, 900, 60) end })
+    playSpecialTo(ns2, 4)
+    specialRun(ns2)
+    local fur, detail = earLayers(ns2)
+    eq(fur._texture, TEX .. "bunny-ears.tga", "ears from the shared folder")
+    truthy(textureExists(fur._texture))
+    eq(detail._texture, fur._texture)
+    local bfur = bunnyLayers()
+    eq(bfur._texture, TEX .. "devil\\bunny-idle.tga")
+    truthy(textureExists(bfur._texture))
+    local lines = ns2.Bunny:GetStats()
+    truthy(lines[2]:find("specials: 1"), lines[2])
+end)
+
 ----------------------------------------------------------------------------
 
 io.write("Hygiene\n")

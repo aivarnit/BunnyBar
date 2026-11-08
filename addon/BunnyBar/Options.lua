@@ -476,6 +476,7 @@ local function buildBehaviors(x, y)
         { key = "idleExtras", label = "Idle animations (washing, stretching, ...)" },
         { key = "carrot", label = "Find and eat carrots" },
         { key = "burrow", label = "Burrow to the other side" },
+        { key = "effects", label = "Style-Specific Effects (each style's special)" },
     }
     local cy = y - 20
     for _, row in ipairs(rows) do
@@ -484,6 +485,9 @@ local function buildBehaviors(x, y)
     end
     local bottom
     c.burrowFrequency, bottom = enumRow(x, cy - 2, "Burrowing", "burrowFrequency", {
+        { label = "Rare", value = "rare" }, { label = "Normal", value = "normal" }, { label = "Often", value = "often" },
+    })
+    c.effectsFrequency, bottom = enumRow(x, bottom, "Effects", "effectsFrequency", {
         { label = "Rare", value = "rare" }, { label = "Normal", value = "normal" }, { label = "Often", value = "often" },
     })
     return personalityRow(x, bottom - 4)
@@ -606,6 +610,7 @@ function Options.Refresh()
 
     for key, cb in pairs(c.behaviors) do cb:SetChecked(db[key]) end
     for _, rb in ipairs(c.burrowFrequency) do rb:SetChecked(rb.value == db.burrowFrequency) end
+    for _, rb in ipairs(c.effectsFrequency) do rb:SetChecked(rb.value == db.effectsFrequency) end
     c.hearts:SetChecked(db.hearts)
     c.moods:SetChecked(db.moods)
     if c.personalityMode == "dropdown" then

@@ -15,6 +15,11 @@ Outputs (committed to the repository):
   docs/images/sprite-preview.png                     all frames, one row per animation
   docs/images/sleep-preview.gif                      animated nap, using the in-game timings
 
+  addon/BunnyBar/Textures[/<style>]/bunny-special.tga     256x64   special body poses (8)
+  addon/BunnyBar/Textures[/<style>]/bunny-special-fx.tga  256x512  special effect, from art/pixelfx/
+  addon/BunnyBar/SpecialData.lua                            specials as merged steps
+  art/pixelfx/timeline.json                                  what scripts/pixelfx_export.mjs renders
+
   addon/BunnyBar/Textures/bunny-ears.tga     32x32  portrait ears (32x16 frame)
   addon/BunnyBar/Textures/bunny-icon.tga     32x32  AddOns-list icon (single layer)
   docs/images/sprite-preview.png                     also shows colour variants + ears
@@ -153,16 +158,18 @@ def draw_bunny(
     look_up=False,
     blush_big=False,
     carrot=None,
+    carrot_gold=False,
     style=None,
 ) -> Canvas:
     """Compose one bunny frame (facing right).
 
     eyes: "open" | "half" | "closed" | "happy" (defaults from eyes_closed)
-    mouth: "normal" | "yawn" | "tongue"
+    mouth: "normal" | "yawn" | "tongue" | "grin" | "o"
     face: 1 = profile (default), 0 = turned towards the viewer, -1 = looking back
     front_paw2: optional second front paw (both paws raised)
     foot_front: draw the hind foot in front of the body/head (scratching)
     carrot: optional ((base_x, base_y), (dir_x, dir_y), length) held carrot
+    carrot_gold: draw that carrot golden (classic special)
     style: a Style (variation) whose hooks add horns, wings, tails, patches...
     """
     if eyes is None:
@@ -225,7 +232,7 @@ def draw_bunny(
         draw_face_turned(c, P, face, eyes, look_up, blush_big)
         style.face(c, P, None)
         if carrot:
-            draw_carrot(c, *carrot)
+            draw_carrot(c, *carrot, gold=carrot_gold)
         style.over_head(c, P)
         c.outline()
         style.after_outline(c, P)
@@ -283,12 +290,21 @@ def draw_bunny(
         c.set(nx - 2, ny + 1, EYE)
         c.set(nx - 1, ny + 2, PINK_DARK)
         c.set(nx - 2, ny + 2, EYE)
+    elif mouth == "grin":
+        # Wide, upturned grin.
+        c.set(nx - 1, ny + 1, SHADE_DARK)
+        c.set(nx - 2, ny + 1, SHADE_DARK)
+        c.set(nx - 3, ny, SHADE_DARK)
+    elif mouth == "o":
+        # Small round "oh!".
+        c.set(nx - 1, ny + 1, EYE)
+        c.set(nx - 1, ny + 2, EYE)
     else:
         c.set(nx - 1, ny + 1, SHADE_DARK)  # tiny mouth
     style.face(c, P, (ex, ey, nx, ny))
 
     if carrot:
-        draw_carrot(c, *carrot)
+        draw_carrot(c, *carrot, gold=carrot_gold)
     style.over_head(c, P)
     c.outline()
     style.after_outline(c, P)
@@ -333,9 +349,16 @@ LEAF = (104, 182, 76, 255)
 LEAF_DARK = (58, 128, 56, 255)
 
 
-def draw_carrot(c: Canvas, base, direction, length):
+GOLD_CARROT = (255, 204, 70, 255)
+GOLD_CARROT_DARK = (214, 142, 36, 255)
+GOLD_CARROT_HI = (255, 246, 196, 255)
+
+
+def draw_carrot(c: Canvas, base, direction, length, gold=False):
     """Carrot from its leafy top at `base` towards its tip along `direction`
-    (unit vector), `length` pixels of orange. length 0 = leaves only."""
+    (unit vector), `length` pixels of orange. length 0 = leaves only.
+    `gold`: the classic special's golden carrot (with a highlight)."""
+    body, ridge = (GOLD_CARROT, GOLD_CARROT_DARK) if gold else (CARROT, CARROT_DARK)
     bx, by = base
     dx, dy = direction
     # Leaves sprout from the base, away from the tip.
@@ -350,10 +373,12 @@ def draw_carrot(c: Canvas, base, direction, length):
             break
         w = 1.4 * (1 - t / (length + 1.5)) if length else 0
         px, py = bx + dx * t, by + dy * t
-        c.set(int(round(px)), int(round(py)), CARROT)
+        c.set(int(round(px)), int(round(py)), body)
         if w > 0.7:
             # Thicker near the top; darker ridge on one side.
-            c.set(int(round(px - dy)), int(round(py + dx)), CARROT_DARK)
+            c.set(int(round(px - dy)), int(round(py + dx)), ridge)
+    if gold and length >= 2:
+        c.set(int(round(bx + dx * 1.0)), int(round(by + dy * 1.0)), GOLD_CARROT_HI)
 
 
 def zzz(c: Canvas, x: int, y: int, big: bool) -> None:
@@ -681,6 +706,7 @@ def frames(style="classic"):
         "bunny-groom": groom_frames(st),
         "bunny-moves": moves_frames(st),
         "bunny-burrow": burrow_frames(st),
+        "bunny-special": special_frames(st),
     }
 
 
@@ -1021,6 +1047,304 @@ def burrow_fx_frames():
 
 
 # --------------------------------------------------------------------------
+# Style-specific specials (v0.5): the bunny's own acting, per style
+# --------------------------------------------------------------------------
+#
+# Each style has one special behaviour. The BODY (these poses) is drawn here
+# like every other animation, so fur tinting keeps working. The EFFECT
+# (sparkles, flame, feathers, fire, wisps) is drawn with PixelFX at
+# development time (art/pixelfx/, see its README) and converted below into an
+# untinted back/front effect sheet per style. Every style's special sheet has
+# SPECIAL_FRAMES frames; each style uses its own subset.
+
+SPECIAL_FRAMES = 8
+
+
+def _pad(frames_, n=SPECIAL_FRAMES):
+    return (frames_ + [frames_[-1]] * n)[:n]
+
+
+# Classic: the golden carrot, raised high like a trophy.
+RAISE = dict(body=(13.4, 21.8, 7.6, 6.4), head=(19.6, 15.8, 6.4, 5.6),
+             ears=((17.4, 12.0, 10.0, 0.40), (20.4, 11.5, 10.0, 0.26)),
+             back_foot=(10.4, 27.8, 3.6, 1.6), front_paw=(19.0, 27.6, 1.9, 1.5), tail=(5.8, 20.0, 2.6))
+RAISE_BOB = dict(RAISE, ears=((17.4, 12.0, 10.0, 0.30), (20.4, 11.5, 10.0, 0.14)))
+TROPHY = (28.4, 2.6)                    # golden carrot's leafy top when raised
+TROPHY_DIR = _norm(-0.2, 1.0)           # pointing down into the paws
+TROPHY_PAWS = ((27.4, 10.8, 1.9, 1.6), (25.8, 11.8, 1.9, 1.6))
+
+
+def classic_special(st):
+    d = lambda base=None, **kw: draw_bunny(style=st, **{**(base or {}), **kw})
+    pb = (24.0, 24.2)
+    p1, p2 = paws_at(pb)
+    hold = d(dict(HOLDING, head=(21.2, 16.4, 6.4, 5.6)), front_paw=p1, front_paw2=p2,
+             carrot=(pb, CARROT_DIR, 6.0), carrot_gold=True, eyes="open")
+    up1, up2 = TROPHY_PAWS
+    raise_ = d(RAISE, eyes="happy", mouth="tongue", front_paw=up1, front_paw2=up2,
+               carrot=(TROPHY, TROPHY_DIR, 7.0), carrot_gold=True)
+    bob = d(RAISE_BOB, eyes="happy", mouth="tongue", blush_big=True,
+            front_paw=(up1[0], up1[1] - 0.8) + up1[2:], front_paw2=(up2[0], up2[1] - 0.8) + up2[2:],
+            carrot=((TROPHY[0], TROPHY[1] - 0.8), TROPHY_DIR, 7.0), carrot_gold=True)
+    p1, p2 = paws_at((24.2, 23.4))
+    hug = d(HOLDING, eyes="happy", blush_big=True, front_paw=p1, front_paw2=p2,
+            carrot=((24.2, 23.4), CARROT_DIR, 6.0), carrot_gold=True)
+    done = d(HOLDING, eyes="happy", mouth="tongue", blush_big=True,
+             front_paw=(22.6, 22.6, 1.9, 1.6), front_paw2=(21.4, 23.0, 1.9, 1.6))
+    tug = d(dict(SNIFF_A, front_paw=(25.2, 27.8, 2.2, 1.3)),
+            carrot=((27.2, 27.0), _norm(0.2, 1.0), 1.0), carrot_gold=True)
+    return _pad([d(NOTICE), tug, hold, raise_, bob, hug, done])
+    # 1 notice, 2 tug, 3 pop/hold, 4 raise, 5 raise bob, 6 hug, 7 done (carrot gone)
+
+
+# Devil: rubs its paws, conjures a flame over one paw, snuffs it.
+SCHEME = dict(body=(14.2, 22.8, 8.2, 5.6), head=(21.2, 17.0, 6.4, 5.6),
+              ears=((18.8, 13.2, 10.0, 0.50), (21.8, 12.8, 10.0, 0.38)),
+              back_foot=(10.6, 27.8, 3.8, 1.5), front_paw=(19.5, 27.6, 1.9, 1.5), tail=(6.0, 20.6, 2.6))
+CONJURE = dict(body=(14.0, 21.8, 7.8, 6.2), head=(20.6, 15.6, 6.4, 5.6),
+               ears=((18.6, 11.8, 10.0, 0.22), (21.6, 11.3, 10.0, 0.06)),
+               back_foot=(10.5, 27.8, 3.6, 1.6), front_paw=(19.5, 27.6, 1.9, 1.5), tail=(5.4, 19.0, 2.6))
+DEVIL_PAW = (27.0, 11.2)               # the raised paw; the flame floats just above it
+
+
+def devil_special(st):
+    d = lambda base=None, **kw: draw_bunny(style=st, **{**(base or {}), **kw})
+    rub1 = d(SCHEME, eyes="half", mouth="grin",
+             front_paw=(24.0, 23.0, 1.9, 1.6), front_paw2=(22.6, 23.6, 1.9, 1.6))
+    rub2 = d(SCHEME, eyes="half", mouth="grin",
+             front_paw=(23.2, 23.6, 1.9, 1.6), front_paw2=(23.4, 22.8, 1.9, 1.6))
+    paw = (DEVIL_PAW[0], DEVIL_PAW[1] + 1.6, 1.9, 1.6)
+    conjure = d(CONJURE, look_up=True, mouth="grin", front_paw=paw, front_paw2=(22.4, 23.4, 1.9, 1.6))
+    watch = d(dict(CONJURE, head=(20.8, 15.2, 6.4, 5.6), tail=(5.0, 18.2, 2.6),
+                   ears=((18.6, 11.4, 10.0, 0.30), (21.6, 10.9, 10.0, 0.14))),
+              look_up=True, eyes="happy", mouth="grin", front_paw=paw, front_paw2=(22.4, 23.4, 1.9, 1.6))
+    snap = d(CONJURE, eyes="closed", mouth="grin",
+             front_paw=(DEVIL_PAW[0] - 0.4, DEVIL_PAW[1] + 2.4, 1.7, 1.7), front_paw2=(22.4, 23.4, 1.9, 1.6))
+    smug = d(SIT, eyes="happy", mouth="grin")
+    return _pad([rub1, rub2, conjure, watch, snap, smug])
+    # 1 rub A, 2 rub B, 3 conjure, 4 watch the flame, 5 snuff, 6 smug
+
+
+# Angel: folds its paws, floats up (lifted in game), hovers, lands softly.
+PRAY = dict(body=(14.0, 22.6, 8.2, 5.6), head=(21.0, 16.6, 6.4, 5.6),
+            ears=((19.0, 12.8, 10.0, 0.28), (22.0, 12.3, 10.0, 0.14)),
+            back_foot=(10.5, 27.8, 3.6, 1.6), front_paw=(19.5, 27.6, 1.9, 1.5), tail=(6.2, 20.4, 2.6))
+FLOAT = dict(body=(14.4, 21.4, 7.4, 6.2), head=(21.0, 15.2, 6.4, 5.6),
+             ears=((19.0, 11.4, 10.0, 0.40), (22.0, 10.9, 10.0, 0.26)),
+             back_foot=(12.6, 27.4, 2.2, 2.0), front_paw=(18.8, 27.8, 1.6, 1.6), tail=(6.8, 20.4, 2.4))
+FLOAT_B = dict(FLOAT, ears=((19.0, 11.4, 10.0, 0.32), (22.0, 10.9, 10.0, 0.16)),
+               back_foot=(12.8, 27.8, 2.2, 1.8))
+ANGEL_PAWS = ((23.6, 21.8, 1.8, 1.6), (22.6, 22.4, 1.8, 1.6))
+
+
+def angel_special(st):
+    d = lambda base=None, **kw: draw_bunny(style=st, **{**(base or {}), **kw})
+    pray = d(PRAY, eyes="closed", front_paw=ANGEL_PAWS[0], front_paw2=ANGEL_PAWS[1])
+    float_a = d(FLOAT, eyes="closed", front_paw2=ANGEL_PAWS[1], front_paw=ANGEL_PAWS[0])
+    float_b = d(FLOAT_B, eyes="happy", front_paw2=ANGEL_PAWS[1], front_paw=ANGEL_PAWS[0])
+    land = d(SQUASH, eyes="closed")
+    glad = d(SIT, eyes="happy", blush_big=True)
+    return _pad([pray, float_a, float_b, land, glad])
+    # 1 pray, 2 float, 3 float (bliss), 4 soft landing, 5 glad
+
+
+# Dragon: "ah... ahh... CHOO!" - a tiny fire sneeze, then a surprised look.
+AH = dict(body=(13.8, 22.0, 8.0, 6.0), head=(20.2, 14.8, 6.4, 5.6),
+          ears=((18.2, 11.0, 10.0, 0.42), (21.2, 10.6, 10.0, 0.30)),
+          back_foot=(10.5, 27.8, 3.6, 1.6), front_paw=(19.5, 27.6, 1.9, 1.5), tail=(6.0, 20.0, 2.6))
+AHH = dict(AH, body=(13.4, 21.8, 8.0, 6.2), head=(19.6, 14.0, 6.4, 5.6),
+           ears=((17.6, 10.4, 10.0, 0.56), (20.6, 10.0, 10.0, 0.44)), tail=(5.6, 19.6, 2.6))
+CHOO = dict(body=(14.8, 22.8, 8.0, 5.6), head=(22.4, 17.6, 6.4, 5.4),
+            ears=((19.8, 13.8, 10.0, -0.10), (22.6, 13.4, 10.0, -0.26)),
+            back_foot=(11.2, 27.8, 3.6, 1.6), front_paw=(21.0, 27.6, 1.9, 1.5), tail=(6.8, 21.0, 2.6))
+SURPRISED = dict(SIT, body=(13.8, 21.8, 8.0, 6.2), head=(20.8, 15.4, 6.4, 5.6),
+                 ears=((19.0, 11.4, 10.4, 0.02), (22.0, 10.9, 10.4, -0.12)))
+
+
+def mouth_of(pose):
+    """Where the mouth is (frame pixels) for a profile head."""
+    hx, hy, hrx, _ = pose["head"]
+    return int(round(hx + hrx - 0.6)) - 1, int(round(hy + 0.8)) + 1
+
+
+def dragon_special(st):
+    d = lambda base=None, **kw: draw_bunny(style=st, **{**(base or {}), **kw})
+    twitch = d(SIT, eyes="half", nose_twitch=True)
+    ah = d(AH, look_up=True, eyes="half", mouth="o", nose_twitch=True)
+    ahh = d(AHH, look_up=True, eyes="closed", mouth="yawn", nose_twitch=True)
+    choo = d(CHOO, eyes="closed", mouth="yawn")
+    wow = d(SURPRISED, mouth="o")
+    blink = d(SURPRISED, eyes="closed", mouth="o")
+    sheepish = d(SIT, eyes="happy", blush_big=True)
+    return _pad([twitch, ah, ahh, choo, wow, blink, sheepish])
+    # 1 nose twitch, 2 ah, 3 ahh, 4 CHOO, 5 surprised, 6 blink, 7 sheepish
+
+
+# Zombie: freezes, watches wisps circle its head, shakes them off.
+SPOOKED = dict(SIT, ears=((19.0, 12.0, 10.0, 0.06), (22.0, 11.5, 10.0, -0.10)))
+
+
+def zombie_special(st):
+    d = lambda base=None, **kw: draw_bunny(style=st, **{**(base or {}), **kw})
+    notice = d(SPOOKED, look_up=True)
+    front = d(dict(SPOOKED, head=(20.8, 15.6, 6.2, 5.6)), face=0, look_up=True)
+    back = d(dict(SPOOKED, head=(20.4, 15.6, 6.4, 5.6)), face=-1, look_up=True)
+    awe = d(dict(SPOOKED, head=(21.0, 15.2, 6.4, 5.6)), look_up=True, mouth="o")
+    shake1 = d(dict(SIT, ears=((19.0, 12.0, 10.0, 0.48), (22.0, 11.5, 10.0, 0.32))), eyes="closed")
+    shake2 = d(dict(SIT, ears=((19.0, 12.0, 10.0, -0.22), (22.0, 11.5, 10.0, -0.38))), eyes="closed")
+    content = d(SIT, eyes="happy")
+    return _pad([notice, front, back, awe, shake1, shake2, content])
+    # 1 notice, 2 watch (front), 3 watch (back), 4 awe, 5/6 shake, 7 content
+
+
+SPECIAL_BUILDERS = {"classic": classic_special, "devil": devil_special, "angel": angel_special,
+                    "dragon": dragon_special, "zombie": zombie_special}
+
+
+def special_frames(st):
+    return SPECIAL_BUILDERS[st.id](st)
+
+
+# Effect canvas: FX_W x FX_H source pixels. The bunny's 32x32 frame sits
+# bottom-centre in it (FX_OFFSET), so the effect can reach 16 px above the
+# frame and 8 px to either side but never below the bunny's own frame (it
+# must not cover the action buttons underneath). PixelFX's local origin
+# (0, 0) is the floor under the bunny's frame centre: canvas (24, 46).
+FX_W = FX_H = 48
+FX_OFFSET = (8, 16)
+FX_ORIGIN = (24, 46)
+FX_STEP = 0.1          # one effect frame every 0.1 s (10 fps)
+FX_COLS = 5            # effect sheet: 5 x 5 grid of frames per layer
+FX_MAX = FX_COLS * FX_COLS
+FX_SHEET = 256         # each layer is 256 x 256; back on top, front below
+
+# Per style: (label, PixelFX effect id, body steps, effect start, effect frames).
+# Body steps: (special frame 1-8, seconds, lift in source px). The bunny is
+# raised `lift` px (the angel's float); the effect never moves.
+SPECIALS = {
+    "classic": dict(label="Carrot Celebration", effect="carrot-celebration", fx_start=0.7, fx_frames=21, body=[
+        (1, 0.3, 0), (2, 0.4, 0), (3, 0.2, 0),
+        (4, 0.5, 0), (5, 0.2, 0), (4, 0.3, 0), (5, 0.2, 0),
+        (6, 0.4, 0), (7, 0.3, 0),
+    ]),
+    "devil": dict(label="Mischievous Flame", effect="mischievous-flame", fx_start=0.7, fx_frames=21, body=[
+        (1, 0.3, 0), (2, 0.1, 0), (1, 0.2, 0), (2, 0.1, 0),
+        (3, 0.6, 0), (4, 0.4, 0), (3, 0.4, 0),
+        (5, 0.3, 0), (6, 0.5, 0),
+    ]),
+    "angel": dict(label="Heavenly Blessing", effect="heavenly-blessing", fx_start=0.0, fx_frames=25, body=[
+        (1, 0.3, 0),
+        (2, 0.1, 1), (2, 0.1, 2), (2, 0.1, 3), (2, 0.1, 4), (2, 0.2, 5),
+        (3, 0.3, 5), (2, 0.3, 4), (3, 0.3, 5), (2, 0.2, 4),
+        (2, 0.1, 3), (2, 0.1, 2), (2, 0.1, 1),
+        (4, 0.2, 0), (5, 0.3, 0),
+    ]),
+    "dragon": dict(label="Fire Sneeze", effect="fire-sneeze", fx_start=0.3, fx_frames=18, body=[
+        (1, 0.3, 0), (2, 0.3, 0), (3, 0.4, 0),
+        (4, 0.4, 0),
+        (5, 0.6, 0), (6, 0.1, 0), (5, 0.2, 0), (7, 0.4, 0),
+    ]),
+    "zombie": dict(label="Haunted Wisps", effect="haunted-wisps", fx_start=0.2, fx_frames=23, body=[
+        (1, 0.3, 0), (2, 0.4, 0), (4, 0.3, 0), (3, 0.4, 0), (2, 0.4, 0), (1, 0.3, 0),
+        (5, 0.1, 0), (6, 0.1, 0), (5, 0.1, 0), (7, 0.4, 0),
+    ]),
+}
+
+
+def _cs(seconds):
+    return int(round(seconds * 100))   # centiseconds: exact step arithmetic
+
+
+def special_steps(style_id):
+    """Merge the body steps with the effect frames into one list of
+    (pose, seconds, effect frame or 0, lift). MIRRORED into SpecialData.lua."""
+    sp = SPECIALS[style_id]
+    marks = {}
+    t = 0
+    for frame_i, sec, lift in sp["body"]:
+        marks.setdefault(t, {})["body"] = (frame_i, lift)
+        t += _cs(sec)
+    total = t
+    start, n, step = _cs(sp["fx_start"]), sp["fx_frames"], _cs(FX_STEP)
+    for k in range(n):
+        if start + k * step < total:
+            marks.setdefault(start + k * step, {})["fx"] = k + 1
+    if start + n * step < total:
+        marks.setdefault(start + n * step, {})["fx"] = 0
+    out, body, fx = [], None, 0
+    times = sorted(marks)
+    for i, t0 in enumerate(times):
+        m = marks[t0]
+        body = m.get("body", body)
+        fx = m.get("fx", fx)
+        t1 = times[i + 1] if i + 1 < len(times) else total
+        out.append(("special%d" % body[0], (t1 - t0) / 100, fx, body[1]))
+    return out
+
+
+def special_duration(style_id):
+    return round(sum(s for _, s, _, _ in special_steps(style_id)), 2)
+
+
+def lift_at(style_id, seconds):
+    """The body's lift (px) at `seconds` into the special."""
+    t, lift = 0, 0
+    for _, sec, _, l in special_steps(style_id):
+        if _cs(seconds) < t + _cs(sec):
+            return l
+        t += _cs(sec)
+    return 0
+
+
+def to_local(x, y):
+    """Bunny-frame pixel -> PixelFX local coordinates (origin: the floor under the frame centre)."""
+    return round(x + FX_OFFSET[0] - FX_ORIGIN[0], 2), round(y + FX_OFFSET[1] - FX_ORIGIN[1], 2)
+
+
+def special_anchors(style_id):
+    """Points the effects attach to, in PixelFX local coordinates."""
+    if style_id == "classic":
+        tip = (TROPHY[0] + TROPHY_DIR[0] * 7, TROPHY[1] + TROPHY_DIR[1] * 7)
+        return {"carrot": to_local(TROPHY[0] - 0.6, TROPHY[1] + 2.4), "carrotTop": to_local(*TROPHY),
+                "carrotTip": to_local(*tip), "chest": to_local(24.0, 22.4), "ground": to_local(27.2, 28.0)}
+    if style_id == "devil":
+        return {"paw": to_local(DEVIL_PAW[0], DEVIL_PAW[1])}
+    if style_id == "angel":
+        hx, hy, hrx, hry = FLOAT["head"]
+        pray_hx, pray_hy, _, pray_hry = PRAY["head"]
+        return {"halo": to_local(hx - 0.5, hy - hry - 2.6), "haloPray": to_local(pray_hx - 0.5, pray_hy - pray_hry - 2.6),
+                "body": to_local(*FLOAT["body"][:2])}
+    if style_id == "dragon":
+        return {"mouth": to_local(*mouth_of(CHOO)), "nose": to_local(*mouth_of(AHH))}
+    if style_id == "zombie":
+        hx, hy, _, hry = SPOOKED["head"]
+        return {"head": to_local(hx, hy - hry - 2.0)}
+    return {}
+
+
+def special_timeline():
+    """art/pixelfx/timeline.json: what the PixelFX export renders."""
+    import json
+    styles = {}
+    for st in STYLES:
+        sp = SPECIALS[st.id]
+        samples = []
+        for k in range(sp["fx_frames"]):
+            t = round(k * FX_STEP, 2)
+            samples.append({"t": t, "lift": lift_at(st.id, sp["fx_start"] + t)})
+        styles[st.id] = {
+            "effect": sp["effect"], "label": sp["label"], "fxStart": sp["fx_start"],
+            "duration": special_duration(st.id), "samples": samples, "anchors": special_anchors(st.id),
+        }
+    doc = {
+        "generatedBy": "scripts/generate_sprites.py - do not edit by hand",
+        "canvas": [FX_W, FX_H], "origin": list(FX_ORIGIN), "bunnyOffset": list(FX_OFFSET),
+        "step": FX_STEP, "styles": styles,
+    }
+    return (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode()
+
+
+# --------------------------------------------------------------------------
 # Hover heart
 # --------------------------------------------------------------------------
 
@@ -1089,6 +1413,7 @@ POSES = {
     "burrowEmerge1": ("bunny-burrow", 9), "burrowEmerge2": ("bunny-burrow", 10),
     "burrowPop": ("bunny-burrow", 11), "burrowShakeA": ("bunny-burrow", 12),
     "burrowShakeB": ("bunny-burrow", 13),
+    **{"special%d" % i: ("bunny-special", i) for i in range(1, SPECIAL_FRAMES + 1)},
 }
 
 # Sequences: (pose, seconds). MIRRORS Bunny.SEQUENCES in Animation.lua.
@@ -1298,6 +1623,8 @@ GROUND = (196, 186, 214, 255)
 
 
 def blend(dst, src):
+    if src[3] == 255:
+        return src            # opaque: same result as the blend, much faster
     a = src[3] / 255
     return tuple(round(src[i] * a + dst[i] * (1 - a)) for i in range(3)) + (255,)
 
@@ -1310,6 +1637,9 @@ def blit(rows, c: Canvas, x0, y0, scale):
                 continue
             for sy in range(scale):
                 r = rows[y0 + y * scale + sy]
+                if p[3] == 255:
+                    r[x0 + x * scale:x0 + (x + 1) * scale] = [p] * scale
+                    continue
                 for sx in range(scale):
                     r[x0 + x * scale + sx] = blend(r[x0 + x * scale + sx], p)
 
@@ -1451,10 +1781,13 @@ def blit_clip(rows, c, x0, y0, scale):
                 if not 0 <= yy < H:
                     continue
                 r = rows[yy]
-                for sx in range(scale):
-                    xx = x0 + x * scale + sx
-                    if 0 <= xx < W:
-                        r[xx] = blend(r[xx], p)
+                xa, xb = max(0, x0 + x * scale), min(W, x0 + (x + 1) * scale)
+                if p[3] == 255:
+                    if xb > xa:
+                        r[xa:xb] = [p] * (xb - xa)
+                    continue
+                for xx in range(xa, xb):
+                    r[xx] = blend(r[xx], p)
 
 
 def seq_frames(sheets, name, hex_color, facing=1):
@@ -1611,7 +1944,8 @@ def previews_v3(all_sheets):
 
 
 def lzw_encode(data: bytes, min_size: int) -> bytes:
-    """GIF-flavoured LZW (variable code width, LSB-first packing)."""
+    """GIF-flavoured LZW (variable code width, LSB-first packing). The string
+    table is keyed by (prefix code, next byte) integers."""
     clear, eoi = 1 << min_size, (1 << min_size) + 1
     out = bytearray()
     acc = nbits = 0
@@ -1626,20 +1960,20 @@ def lzw_encode(data: bytes, min_size: int) -> bytes:
             acc >>= 8
             nbits -= 8
 
-    def reset():
-        return {bytes([i]): i for i in range(clear)}, eoi + 1, min_size + 1
-
-    table, next_code, size = reset()
+    table, next_code = {}, eoi + 1
     emit(clear)
-    w = b""
+    w = -1  # code of the current prefix (-1: empty)
     for k in data:
-        wk = w + bytes([k])
-        if wk in table:
-            w = wk
+        if w < 0:
+            w = k
             continue
-        emit(table[w])
+        code = table.get((w << 8) | k)
+        if code is not None:
+            w = code
+            continue
+        emit(w)
         if next_code < 4096:
-            table[wk] = next_code
+            table[(w << 8) | k] = next_code
             next_code += 1
             # The decoder adds its entries one code later than we do, so it
             # widens codes when our next_code passes 2**size.
@@ -1647,10 +1981,10 @@ def lzw_encode(data: bytes, min_size: int) -> bytes:
                 size += 1
         else:
             emit(clear)
-            table, next_code, size = reset()
-        w = bytes([k])
-    if w:
-        emit(table[w])
+            table, next_code, size = {}, eoi + 1, min_size + 1
+        w = k
+    if w >= 0:
+        emit(w)
     emit(eoi)
     if nbits:
         out.append(acc & 0xFF)
@@ -1707,6 +2041,9 @@ def nap_gif(sheets, scale=5) -> bytes:
 
 
 SPRITE_DATA_PATH = ROOT / "addon" / "BunnyBar" / "SpriteData.lua"
+SPECIAL_DATA_PATH = ROOT / "addon" / "BunnyBar" / "SpecialData.lua"
+PIXELFX_ART = ROOT / "art" / "pixelfx"
+TIMELINE_PATH = PIXELFX_ART / "timeline.json"
 IMAGES = ROOT / "docs" / "images"
 
 
@@ -1751,6 +2088,149 @@ def sprite_data_lua(all_sheets) -> bytes:
     return ("\n".join(lines) + "\n").encode()
 
 
+# ---------------------------------------------------------------------------
+# Special effects: PixelFX renders (art/pixelfx/<style>.png) -> addon textures
+# ---------------------------------------------------------------------------
+
+FX_ALPHA_MIN = 32   # glow fainter than this is dropped: keeps the effect crisp
+
+
+def decode_png(data: bytes):
+    """Minimal PNG reader (8-bit RGBA, non-interlaced, as PixelFX writes):
+    returns (w, h, rows of (r, g, b, a))."""
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    pos, idat, w = 8, b"", 0
+    while pos < len(data):
+        n = struct.unpack(">I", data[pos:pos + 4])[0]
+        kind, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + n]
+        if kind == b"IHDR":
+            w, h, depth, ctype, _, _, interlace = struct.unpack(">IIBBBBB", body)
+            assert depth == 8 and ctype == 6 and interlace == 0, "need 8-bit RGBA, non-interlaced"
+        elif kind == b"IDAT":
+            idat += body
+        pos += 12 + n
+    raw, stride, rows, prev = zlib.decompress(idat), w * 4, [], bytearray(w * 4)
+    for y in range(h):
+        f, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = line[i - 4] if i >= 4 else 0
+            b, c = prev[i], prev[i - 4] if i >= 4 else 0
+            if f == 1:
+                line[i] = (line[i] + a) & 255
+            elif f == 2:
+                line[i] = (line[i] + b) & 255
+            elif f == 3:
+                line[i] = (line[i] + (a + b) // 2) & 255
+            elif f == 4:
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append([tuple(line[x * 4:x * 4 + 4]) for x in range(w)])
+        prev = line
+    return w, h, rows
+
+
+def special_fx_frames(style_id):
+    """(back, front) FX_W x FX_H canvases per effect frame, from the PixelFX export."""
+    import json
+    meta = json.loads((PIXELFX_ART / f"{style_id}.json").read_text())
+    _, _, rows = decode_png((PIXELFX_ART / f"{style_id}.png").read_bytes())
+    out = []
+    for fr in meta["frames"]:
+        pair = []
+        for layer in ("back", "front"):
+            r = fr[layer]
+            c = Canvas(FX_W, FX_H)
+            for y in range(FX_H):
+                for x in range(FX_W):
+                    p = rows[r["y"] + y][r["x"] + x]
+                    c.px[y][x] = p if p[3] >= FX_ALPHA_MIN else CLEAR
+            pair.append(c)
+        out.append(tuple(pair))
+    return out
+
+
+def fx_grid(pairs):
+    """Effect sheet: FX_COLS x FX_COLS grid of FX_W x FX_H frames per layer,
+    each layer FX_SHEET square; back layer on top, front layer below."""
+    assert len(pairs) <= FX_MAX, "too many effect frames"
+    rows = [[CLEAR] * FX_SHEET for _ in range(2 * FX_SHEET)]
+    for i, pair in enumerate(pairs):
+        cx, cy = (i % FX_COLS) * FX_W, (i // FX_COLS) * FX_H
+        for layer, c in enumerate(pair):
+            for y in range(FX_H):
+                rows[layer * FX_SHEET + cy + y][cx:cx + FX_W] = c.px[y]
+    return FX_SHEET, 2 * FX_SHEET, rows
+
+
+def special_scene_frames(sheets, style_id, hex_color, fx, scene, x0=0):
+    """(scene rows, seconds) for one special: bunny pose (lifted) + effect layers."""
+    out = []
+    for pose, seconds, fxi, lift in special_steps(style_id):
+        sheet, idx = POSES[pose]
+        body = tint_composite(sheets[sheet][idx - 1], hex_color)
+        items = []
+        if fxi:
+            items.append((fx[fxi - 1][0], x0, -2))
+        items.append((body, x0 + FX_OFFSET[0], lift))
+        if fxi:
+            items.append((fx[fxi - 1][1], x0, -2))
+        out.append((scene.render(items), seconds))
+    return out
+
+
+def limit_palette(frames_, n=256):
+    """Soft glow blends can exceed a GIF's 256 colours: keep the n most used
+    and map the rare rest (faint glow tints) to their nearest kept colour."""
+    from collections import Counter
+    count = Counter(p for rows, _ in frames_ for row in rows for p in row)
+    if len(count) <= n:
+        return frames_
+    keep = [c for c, _ in count.most_common(n)]
+    near = {}
+    for c in count:
+        if c not in near:
+            near[c] = c if c in keep[:n] else min(keep, key=lambda k: sum((a - b) ** 2 for a, b in zip(c, k)))
+    return [([[near[p] for p in row] for row in rows], t) for rows, t in frames_]
+
+
+def special_gif(sheets, style_id, hex_color, fx, scale=3) -> bytes:
+    scene = Scene(FX_W, FX_H + 1, scale)
+    idle = tint_composite(sheets["bunny-idle"][0], hex_color)
+    frames_ = [(scene.render([(idle, FX_OFFSET[0], 0)]), 0.6)]
+    frames_ += special_scene_frames(sheets, style_id, hex_color, fx, scene)
+    frames_.append((scene.render([(idle, FX_OFFSET[0], 0)]), 0.8))
+    return encode_gif(limit_palette(frames_), scene.w * scale, scene.h * scale)
+
+
+def special_data_lua() -> bytes:
+    """addon/BunnyBar/SpecialData.lua: every style's special as merged steps."""
+    lines = [
+        "-- BunnyBar: style-specific special behaviours (v0.5).",
+        "-- GENERATED by scripts/generate_sprites.py - do not edit by hand.",
+        "-- [style] = { label, fxFrames, duration, steps = { { pose, seconds, effect frame (0 = none), lift px } } }",
+        "-- Effect frames live in Textures/<style>/bunny-special-fx.tga: a %d x %d grid of %d x %d frames per"
+        % (FX_COLS, FX_COLS, FX_W, FX_H),
+        "-- layer (%d x %d), back layer (behind the bunny) on top, front layer below." % (FX_SHEET, FX_SHEET),
+        "",
+        "local _, ns = ...",
+        "",
+        "ns.SpecialData = {",
+        "    fx = { file = \"bunny-special-fx.tga\", w = %d, h = %d, offsetX = %d, cols = %d, sheet = %d, grid = true, styled = true },"
+        % (FX_W, FX_H, FX_OFFSET[0], FX_COLS, FX_SHEET),
+    ]
+    for st in STYLES:
+        sp = SPECIALS[st.id]
+        lines.append(f'    {st.id} = {{')
+        lines.append(f'        label = "{sp["label"]}", fxFrames = {sp["fx_frames"]}, duration = {special_duration(st.id):g},')
+        lines.append("        steps = {")
+        for pose, sec, fxi, lift in special_steps(st.id):
+            lines.append(f'            {{ "{pose}", {sec:g}, {fxi}, {lift} }},')
+        lines.append("        },")
+        lines.append("    },")
+    lines.append("}")
+    return ("\n".join(lines) + "\n").encode()
+
+
 def fx_strip(pairs):
     """Burrow effect sheet: back layer strip on top, front layer below."""
     backs, fronts = zip(*pairs)
@@ -1777,6 +2257,14 @@ def build():
     w, h, rows = strip([sheets["bunny-idle"][0]])
     outputs[TEXTURE_DIR / "bunny-icon.tga"] = encode_tga(w, h, rows)
     outputs[SPRITE_DATA_PATH] = sprite_data_lua(all_sheets)
+    outputs[TIMELINE_PATH] = special_timeline()
+    outputs[SPECIAL_DATA_PATH] = special_data_lua()
+    for st in STYLES:
+        fx = special_fx_frames(st.id)
+        assert len(fx) == SPECIALS[st.id]["fx_frames"], f"{st.id}: re-run scripts/pixelfx_export.mjs"
+        w, h, rows = fx_grid(fx)
+        outputs[style_dir(st.id) / "bunny-special-fx.tga"] = encode_tga(w, h, rows)
+        outputs[IMAGES / f"special-{st.id}.gif"] = special_gif(all_sheets[st.id], st.id, st.default_fur, fx)
     outputs[PREVIEW_PATH] = preview(sheets)
     outputs[GIF_PATH] = nap_gif(sheets)
     outputs.update(previews_v3(all_sheets))

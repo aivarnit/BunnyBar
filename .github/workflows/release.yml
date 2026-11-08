@@ -59,9 +59,10 @@ jobs:
           # Capture listings first: `unzip | grep -q` can SIGPIPE under pipefail.
           list=$(unzip -Z1 "$zip")
           test "$(cut -d/ -f1 <<<"$list" | sort -u)" = "BunnyBar"
-          for f in BunnyBar.toc Util.lua Config.lua Appearance.lua SpriteData.lua Placement.lua \
+          for f in BunnyBar.toc Util.lua Config.lua Appearance.lua SpriteData.lua SpecialData.lua Placement.lua \
                    Animation.lua Personality.lua Hearts.lua Ears.lua Options.lua Core.lua Textures/bunny-ears.tga \
                    Textures/bunny-heart.tga Textures/bunny-burrow-fx.tga Textures/bunny-carrot.tga \
+                   Textures/bunny-special.tga Textures/bunny-special-fx.tga Textures/zombie/bunny-special-fx.tga \
                    Textures/devil/bunny-idle.tga Textures/angel/bunny-burrow.tga \
                    Textures/dragon/bunny-hop.tga Textures/zombie/bunny-sleep.tga \
                    Textures/bunny-idle.tga Textures/bunny-hop.tga \

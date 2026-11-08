@@ -56,7 +56,7 @@ class TocTests(unittest.TestCase):
         meta, files = validate.check_toc(r)
         self.assertEqual(r.errors, [])
         self.assertEqual(meta["Interface"], "16001")
-        self.assertEqual(files, ["Util.lua", "Config.lua", "Appearance.lua", "SpriteData.lua",
+        self.assertEqual(files, ["Util.lua", "Config.lua", "Appearance.lua", "SpriteData.lua", "SpecialData.lua",
                                  "Placement.lua", "Animation.lua", "Personality.lua", "Hearts.lua", "Ears.lua",
                                  "Options.lua", "Core.lua"])
 
@@ -128,7 +128,8 @@ class TextureTests(unittest.TestCase):
                   "bunny-sleepy.tga": (256, 64), "bunny-sleep.tga": (256, 64),
                   "bunny-wake.tga": (128, 64), "bunny-carrot.tga": (512, 64),
                   "bunny-groom.tga": (512, 64), "bunny-moves.tga": (256, 64),
-                  "bunny-burrow.tga": (512, 64)}
+                  "bunny-burrow.tga": (512, 64), "bunny-special.tga": (256, 64),
+                  "bunny-special-fx.tga": (256, 512)}
         expected = dict(styled)
         for sid in ("devil", "angel", "dragon", "zombie"):
             expected.update({f"{sid}/{n}": v for n, v in styled.items()})
@@ -567,6 +568,116 @@ class StyleArtTests(unittest.TestCase):
                     self.assertTrue(b[2] > b[0] and b[3] > b[1], f"{sid} {name}: empty box")
 
 
+class SpecialArtTests(unittest.TestCase):
+    """v0.5 style specials: body poses (generator) + effects (PixelFX export)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.g = generate_sprites
+        cls.out = _build()
+
+    def test_every_style_has_a_special_with_its_own_poses(self):
+        g = self.g
+        self.assertEqual(set(g.SPECIALS), {st.id for st in g.STYLES})
+        seen = {}
+        for st in g.STYLES:
+            frames = g.special_frames(st)
+            self.assertEqual(len(frames), g.SPECIAL_FRAMES, st.id)
+            used = {f for f, _, _ in g.SPECIALS[st.id]["body"]}
+            self.assertTrue(used <= set(range(1, g.SPECIAL_FRAMES + 1)), st.id)
+            # each used pose is a real, distinct bunny frame (not just idle)
+            idle = g.frames(st)["bunny-idle"][0].px
+            for f in used:
+                self.assertNotEqual(frames[f - 1].px, idle, f"{st.id} special{f} differs from idle")
+            seen[st.id] = [frames[f - 1].px for f in sorted(used)]
+        # five different performances, not one shared one
+        ids = list(seen)
+        for i, a in enumerate(ids):
+            for b in ids[i + 1:]:
+                self.assertNotEqual(seen[a], seen[b], f"{a} vs {b}")
+
+    def test_classic_raises_a_golden_carrot(self):
+        g = self.g
+        raised = g.special_frames(g.CLASSIC)[3]
+        golds = [(x, y) for y in range(32) for x in range(32) if raised.px[y][x] in (g.GOLD_CARROT, g.GOLD_CARROT_DARK)]
+        self.assertGreater(len(golds), 6)
+        self.assertLess(min(y for _, y in golds), 10, "held high, above the head")
+        fur, detail = g.split_layers(raised)
+        self.assertTrue(all(fur.px[y][x][3] == 0 for x, y in golds), "golden carrot never tinted")
+
+    def test_timelines_are_exact_and_short(self):
+        g = self.g
+        for sid in g.SPECIALS:
+            steps = g.special_steps(sid)
+            for pose, sec, fx, lift in steps:
+                self.assertIn(pose, g.POSES)
+                self.assertGreaterEqual(sec, 0.1 - 1e-9, f"{sid}: no sub-frame steps")
+                self.assertAlmostEqual(sec * 10, round(sec * 10), 6)
+                self.assertGreaterEqual(lift, 0)
+                self.assertLessEqual(lift, 6, "the angel floats a few px, no more")
+            fxs = [fx for _, _, fx, _ in steps if fx]
+            self.assertEqual(fxs, list(range(1, g.SPECIALS[sid]["fx_frames"] + 1)), sid)
+            self.assertLessEqual(len(fxs), g.FX_MAX)
+            self.assertEqual(steps[-1][3], 0, f"{sid} ends on the ground")
+            self.assertTrue(2.0 <= g.special_duration(sid) <= 3.5, sid)
+
+    def test_pixelfx_export_matches_the_timeline(self):
+        import json
+        g = self.g
+        timeline = json.loads(self.out[g.TIMELINE_PATH])
+        self.assertEqual(timeline["canvas"], [g.FX_W, g.FX_H])
+        for sid, spec in timeline["styles"].items():
+            meta = json.loads((g.PIXELFX_ART / f"{sid}.json").read_text())
+            self.assertEqual(meta["effect"], "bunnybar/" + spec["effect"])
+            self.assertEqual([f["t"] for f in meta["frames"]], [s["t"] for s in spec["samples"]],
+                             f"{sid}: re-run node scripts/pixelfx_export.mjs")
+            self.assertEqual(meta["frameSize"], [g.FX_W, g.FX_H])
+            self.assertTrue((g.PIXELFX_ART / "effects" / f"{spec['effect']}.js").exists())
+
+    def test_effect_sheets_are_transparent_untinted_and_above_the_feet(self):
+        g = self.g
+        for st in g.STYLES:
+            fx = g.special_fx_frames(st.id)
+            for i, (back, front) in enumerate(fx):
+                for c in (back, front):
+                    self.assertEqual((c.w, c.h), (g.FX_W, g.FX_H))
+                    self.assertTrue(all(p[3] == 0 for p in c.px[g.FX_H - 1]), f"{st.id} {i + 1}: bottom row empty")
+                    for y in range(g.FX_H):
+                        for p in c.px[y]:
+                            self.assertTrue(p[3] == 0 or p[3] >= g.FX_ALPHA_MIN, "no near-invisible haze")
+            # the shipped sheet is exactly these frames in the grid
+            w, h, rows = g.fx_grid(fx)
+            self.assertEqual((w, h), (256, 512))
+            data = self.out[g.style_dir(st.id) / "bunny-special-fx.tga"]
+            self.assertEqual(data, g.encode_tga(w, h, rows))
+
+    def test_png_reader_round_trips(self):
+        g = self.g
+        rows = [[(x * 20, y * 30, (x + y) * 10, 255 if (x + y) % 2 else 0) for x in range(9)] for y in range(7)]
+        w, h, back = g.decode_png(g.encode_png(9, 7, rows))
+        self.assertEqual((w, h), (9, 7))
+        self.assertEqual([[p for p in r] for r in back], rows)
+
+    def test_special_previews_decode(self):
+        g = self.g
+        for st in g.STYLES:
+            data = self.out[g.IMAGES / f"special-{st.id}.gif"]
+            self.assertLess(len(data), 120_000, st.id)
+            w, h, frames, delays = gif_frames(data)
+            self.assertGreater(len(set(frames)), 10, st.id)
+            self.assertEqual(delays[1:-1], [round(s * 100) for _, s, _, _ in g.special_steps(st.id)], st.id)
+            self.assertTrue((ROOT / "docs" / "images" / f"special-{st.id}.gif").exists())
+
+    def test_lua_special_poses_and_sheet_match_the_generator(self):
+        g = self.g
+        lua = (validate.ADDON_DIR / "Animation.lua").read_text()
+        self.assertIn('special = { file = "bunny-special.tga", count = %d, slots = %d }'
+                      % (g.SPECIAL_FRAMES, g.slots_for(g.SPECIAL_FRAMES)), lua)
+        data = (validate.ADDON_DIR / "SpecialData.lua").read_text()
+        for sid, sp in g.SPECIALS.items():
+            self.assertIn(f'label = "{sp["label"]}", fxFrames = {sp["fx_frames"]}', data)
+
+
 class PackageTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -582,6 +693,17 @@ class PackageTests(unittest.TestCase):
         self.assertIn("BunnyBar/BunnyBar.toc", names)
         self.assertIn("BunnyBar/Textures/bunny-idle.tga", names)
         self.assertTrue(all(n.startswith("BunnyBar/") for n in names))
+        # v0.5: every style's special sheets and the generated data ship...
+        self.assertIn("BunnyBar/SpecialData.lua", names)
+        for sid in ("", "devil/", "angel/", "dragon/", "zombie/"):
+            self.assertIn(f"BunnyBar/Textures/{sid}bunny-special.tga", names)
+            self.assertIn(f"BunnyBar/Textures/{sid}bunny-special-fx.tga", names)
+        # ...but none of the PixelFX development sources or exports do.
+        for n in names:
+            self.assertNotRegex(n, r"\.(mjs|js|json|png|gif|py|md)$", n)
+            self.assertNotIn("pixelfx", n.lower(), n)
+        size = sum(zipfile.ZipFile(out).getinfo(n).compress_size for n in names)
+        self.assertLess(size, 1_500_000, "compressed archive stays small")
 
     def test_build_is_reproducible(self):
         a = package.build(self.tmp / "a").read_bytes()
@@ -633,7 +755,7 @@ class DocsTests(unittest.TestCase):
         for cmd in ["show", "hide", "lock", "unlock", "reset", "size", "speed",
                     "interval", "width", "height", "test", "stats", "bars", "options",
                     "color", "ears", "style", "hearts", "burrow", "idle", "carrot",
-                    "personality", "mood"]:
+                    "personality", "mood", "effects"]:
             self.assertIn(cmd, config)
             self.assertIn(f"/bunny {cmd}", commands, cmd)
             self.assertIn(f"/bunny {cmd}", readme, cmd)

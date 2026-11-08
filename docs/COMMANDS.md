@@ -21,11 +21,13 @@ All commands start with `/bunny`, or the alias `/bunnybar`. Command words aren't
 | `/bunny test burrow` | Burrow to the other side of the track now. It needs a track at least 1.5 bunny widths wider than the bunny. |
 | `/bunny test nap`, `/bunny test hop` | Take a nap now, or hop (same as `/bunny test`). |
 | `/bunny test hearts` | A short burst of hover hearts (hearts must be on). |
+| `/bunny test special` | Play the current style's special now (about 3 s). It works even if style effects are off. A napping bunny wakes up first. It does nothing while the bunny is mid-hop or hidden. |
 | `/bunny style <classic\|devil\|angel\|dragon\|zombie>` | Change the bunny's style. If you haven't picked your own fur colour, the style's default colour comes with it. `/bunny style` on its own lists the styles. |
 | `/bunny personality <balanced\|lazy\|energetic\|playful\|sleepy>` | Set the bunny's personality (it changes which behaviours it picks, not how they look). `/bunny personality` on its own shows the current one. |
 | `/bunny mood` | Show the current mood and personality. `/bunny mood on\|off` switches the mood system; `/bunny mood debug` also shows the mood counters, the current chances and behaviour weights, and when the next decision is due. It only prints when you ask. |
 | `/bunny hearts on\|off\|subtle\|normal\|extra` | Hover hearts on or off, or set their intensity (which also turns them on). |
 | `/bunny burrow on\|off\|rare\|normal\|often` | Burrowing on or off, or set how often (which also turns it on). |
+| `/bunny effects on\|off\|rare\|normal\|often` | Style-specific specials on or off, or set how often (which also turns them on). The chance comes after a cooldown: Rare 6 min, Normal 3 min (default), Often 90 s. `/bunny effects` on its own shows the setting and the current style's special. `off` also ends a special that's playing. |
 | `/bunny idle on\|off` | Idle behaviours: carrot, face washing, scratching, stretching, looking around. |
 | `/bunny carrot on\|off` | Carrot eating only. |
 | `/bunny bars` | Print where automatic placement put the bunny, and the status of every bar it checks: `visible` (with its top edge), `hidden`, `empty` (an XP/rep container with no bar showing), `off track`, `not at bottom`, `no geometry` and so on. Also lists frame names that don't exist on your client, how many frames are watched for live updates, and what last triggered a re-placement. |

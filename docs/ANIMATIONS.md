@@ -49,6 +49,37 @@ Personalities and moods change **which** of these animations the bunny picks, an
 
 The highest counter that's over its threshold picks the mood. A mood lasts at least 3 events unless its need is met (a nap ends Sleepy, a carrot ends Hungry), which stops it flickering back and forth. Moods aren't saved: every session starts Happy. With the mood system off, only the personality applies.
 
+## Style specials (v0.5)
+
+Each style has one rare special of its own. Only the selected style's special ever plays.
+
+| | Special | What happens | Length |
+|---|---|---|---|
+| ![](images/special-classic.gif) | **Classic: Carrot Celebration** | Notices something, tugs a **golden carrot** out of the ground and raises it high with a happy face. A flash on the carrot throws small orange and green twinkles that brake, drift up and wink out; the carrot glints while held. Then it hugs the carrot, which sparkles away. | 2.8 s |
+| ![](images/special-devil.gif) | **Devil: Mischievous Flame** | Rubs its paws with a sly grin, then raises one paw beside its forehead. A spark catches into a small outlined flame that sways, flickers and grows, shedding embers. The bunny snuffs it and the flame squeezes out into a puff of smoke. Smug face. | 2.9 s |
+| ![](images/special-angel.gif) | **Angel: Heavenly Blessing** | Folds its paws and closes its eyes as its halo warms and glints. Gold dust puffs out as it **floats up 5 px**, bobs gently while gold sparkles and small white feathers rock down in front and behind, then lands softly. | 2.8 s |
+| ![](images/special-dragon.gif) | **Dragon: Fire Sneeze** | Nose twitch, "ah…" (head back, smoke puffs from the nose), "ahh…", then **CHOO**. The head snaps forward and a short, snappy cone of flame bursts from the mouth, cools into a thin puff of smoke and leaves a few embers. A surprised look, a blink and a sheepish smile. | 2.7 s |
+| ![](images/special-zombie.gif) | **Zombie: Haunted Wisps** | Freezes and looks up as two green wisps and one purple one flicker in. They circle its head on a tilted orbit, passing **behind and in front of it** with short fading trails, while the bunny turns to watch. Then they come apart into tiny motes, and it shakes its ears. | 2.8 s |
+
+Every special has anticipation, a main action, a distinctive effect, follow-through and recovery, and ends back on the idle pose.
+
+**How often:**
+- **Rare:** at most once every 6 minutes.
+- **Normal (default):** at most once every 3 minutes.
+- **Often:** at most once every 90 seconds.
+
+The cooldown counts from login and from the last special. After it, a special is chosen on 30 % of the scheduler's decisions. Before the cooldown has passed the scheduler makes no extra random draw, so everything else behaves exactly as before.
+
+**Personality and mood** scale that 30 % (Lazy ×0.7, Energetic ×1.2, Playful ×1.5, Sleepy ×0.6; Playful mood ×1.4, Sleepy ×0.7, Hungry ×0.8). A completed special counts as a mood event: hungry +0.5, energy +1.
+
+**Turning them off:** the **Style-Specific Effects** setting or `/bunny effects off`. `/bunny test special` plays one now.
+
+**How it's drawn:**
+- **The body** (the bunny's own poses) comes from the same pose data as every other animation, in each style's `bunny-special.tga`. The fur takes your colour.
+- **The effect** is drawn with [PixelFX](https://github.com/patch-gg/pixelfx) at development time. It's exported as an untinted 48 × 48 back and front layer per frame, in `bunny-special-fx.tga`.
+- **In game:** frames are flipped every 0.1 s by the same timer as every other animation. Nothing is simulated or generated in game. See [art/pixelfx/README.md](../art/pixelfx/README.md).
+- **Placement:** effects reach up to 16 px above the bunny's frame and 8 px to each side, never below its feet, so they don't cover the action buttons.
+
 ## Hopping (8 poses)
 
 ![Hopping right and left](images/hop-preview.gif)

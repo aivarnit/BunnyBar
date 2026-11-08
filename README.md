@@ -6,7 +6,7 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 
 **Current version: 0.2.0** · [Download](https://github.com/aivarnit/BunnyBar/releases/latest) · [Release notes](docs/releases/v0.2.0.md)
 
-> **Coming next (on `main`, not released yet):** v0.4 personalities and moods. See [docs/ANIMATIONS.md](docs/ANIMATIONS.md#personalities-and-moods-v04).
+> **Coming next (on `main`, not released yet):** style specials, one rare pixel-art special per style (v0.5), and personalities and moods (v0.4). See [docs/ANIMATIONS.md](docs/ANIMATIONS.md#style-specials-v05).
 >
 > **Also on `main`:** a smoother 8-pose hop, idle behaviours (carrot eating, face washing, ear scratching, stretching, looking around), rare burrowing across the track, five bunny styles (Classic, Devil, Angel, Dragon, Zombie) and hover hearts. See [docs/ANIMATIONS.md](docs/ANIMATIONS.md). These features still need in-game testing on WoW Forever before release.
 
@@ -29,6 +29,18 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 - **Burrowing** *(v0.3)*: once in a while it digs a hole, disappears into it and pops out of a second hole on the other side of its track.
 - **Personalities** *(v0.4)*: Balanced, Lazy, Energetic, Playful or Sleepy. Each changes how often the bunny naps, hops, burrows and plays.
 - **Moods** *(v0.4)*: the bunny gets sleepy after lots of hopping, hungry until it finds a carrot, and playful after a good rest. Its mood nudges what it does next.
+- **Style specials** *(v0.5)*: every few minutes, the bunny does its style's own special.
+  - Classic raises a golden carrot.
+  - Devil conjures a little flame.
+  - Angel floats up in a blessing of feathers.
+  - Dragon sneezes fire.
+  - Zombie gets circled by wisps.
+
+  They're switchable, and you can set them to Rare, Normal or Often.
+
+  | Classic | Devil | Angel | Dragon | Zombie |
+  |---|---|---|---|---|
+  | ![Carrot Celebration](docs/images/special-classic.gif) | ![Mischievous Flame](docs/images/special-devil.gif) | ![Heavenly Blessing](docs/images/special-angel.gif) | ![Fire Sneeze](docs/images/special-dragon.gif) | ![Haunted Wisps](docs/images/special-zombie.gif) |
 - **Automatic placement**: it sits just above the highest visible bar at the bottom of the screen, whether that's Action Bar 2/3, the XP or reputation bar, or the main action bar.
 - **Live repositioning**: it moves by itself, within a fraction of a second, when you toggle action bars, gain or lose the XP bar, change UI scale or edit your layout. No `/reload` needed.
 - **Manual positioning**: `/bunny unlock`, drag it anywhere, `/bunny lock`. A dragged position always wins over automatic placement until `/bunny reset`.
@@ -38,7 +50,7 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 
 - **Native settings panel**: **Esc → Options → AddOns → BunnyBar**, or `/bunny options`. Everything applies instantly, no reload.
 - **Five styles** *(v0.3)*: Classic, Devil (horns and a pointed tail), Angel (halo and little wings), Dragon (horns, wings, a spiky tail) and Zombie (patchwork, stitches, a floppy ear). Every style does every animation and takes your fur colour.
-- **Behaviour switches** *(v0.3)*: idle animations, carrot eating, burrowing and how often (Rare, Normal or Often).
+- **Behaviour switches** *(v0.3)*: idle animations, carrot eating, burrowing and how often (Rare, Normal or Often). *(v0.5)* **Style-Specific Effects** on or off, and how often.
 - **Any fur colour**: a saturation/brightness square, a hue slider, a brightness slider and a hex-code box (for example `#FFB6C1`), plus a live preview and a Reset Color button. Only the fur changes: eyes, nose, pink inner ears, outlines and shading stay the same in every animation frame.
 - **Size presets**: Tiny 16, Small 32, Regular 64 (the default for new installs), Large 96 or Huge 128.
 - **Custom sizes**: `/bunny size` accepts any whole size from 16 to 128. The panel shows it as "Custom".
@@ -57,7 +69,11 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 
 ### Lightweight
 
-No per-frame work while the bunny sits still; updates run only during the ~0.4 s of each hop. Hover hearts check the cursor 4 times a second (20 near the bunny) and animate with WoW's own animation system. No libraries, no network. Each style's textures are about 700 KB uncompressed, but the game only loads the style you use, and the ZIP stays small because transparent pixels compress well. Your settings are saved per account and carried over when you upgrade.
+No per-frame work while the bunny sits still; updates run only during the ~0.4 s of each hop. Hover hearts check the cursor 4 times a second (20 near the bunny) and animate with WoW's own animation system. No libraries, no network.
+
+Each style's textures are about 1.3 MB uncompressed. That's 700 KB of bunny sheets and a 512 KB special-effect sheet, which is only loaded the first time that style's special plays. The game only loads the style you use, and the ZIP stays small because transparent pixels compress well.
+
+Specials are pre-drawn frames flipped by a timer, about 10 a second for 3 seconds, a few times an hour. No particles are simulated in game. Your settings are saved per account and carried over when you upgrade.
 
 ## Installation
 
@@ -87,6 +103,7 @@ Step-by-step instructions, including how to create a missing `AddOns` folder and
 | `/bunny idle off`, `/bunny carrot off` | Idle behaviours / carrot eating on or off *(v0.3)* |
 | `/bunny personality lazy` | Personality: `balanced`, `lazy`, `energetic`, `playful`, `sleepy` *(v0.4)* |
 | `/bunny mood` | Current mood and personality; `on`/`off`, `debug` *(v0.4)* |
+| `/bunny effects` | Style specials: `on`, `off`, `rare`, `normal`, `often`; on its own, shows the setting *(v0.5)* |
 | `/bunny show` | Show the bunny |
 | `/bunny hide` | Hide the bunny (all animation stops) |
 | `/bunny lock` | Lock the position (click-through) |
@@ -99,7 +116,7 @@ Step-by-step instructions, including how to create a missing `AddOns` folder and
 | `/bunny width 480` | Track width, 64–2000 (default 480) |
 | `/bunny height 16` | Hop height, 0–64 (default 16) |
 | `/bunny test` | Hop right now (a napping bunny wakes up first) |
-| `/bunny test carrot` | Try a behaviour now: `carrot`, `wash`, `scratch`, `stretch`, `look`, `burrow`, `nap`, `hearts` *(v0.3)* |
+| `/bunny test carrot` | Try a behaviour now: `carrot`, `wash`, `scratch`, `stretch`, `look`, `burrow`, `nap`, `hearts` *(v0.3)*, `special` *(v0.5)* |
 | `/bunny stats` | Status, hop counters and performance info |
 | `/bunny bars` | Show which bottom bars were detected and which one the bunny sits on |
 
@@ -142,6 +159,15 @@ luajit tests/lua/run_tests.lua                 # offline Lua tests against a WoW
 python3 scripts/package.py                     # build + verify dist/BunnyBar-<version>.zip
 ```
 
+**Style specials (art only).** The special effects are drawn with [PixelFX](https://github.com/patch-gg/pixelfx) (MIT) at development time. That takes Node.js 18+ and a PixelFX checkout next to this repository. Neither is needed to build, test or run the addon. See [art/pixelfx/README.md](art/pixelfx/README.md).
+
+```sh
+git clone https://github.com/patch-gg/pixelfx ../pixelfx   # once
+python3 scripts/generate_sprites.py                       # writes art/pixelfx/timeline.json
+node scripts/pixelfx_export.mjs                           # renders art/pixelfx/<style>.png
+python3 scripts/generate_sprites.py                       # turns them into Textures/*/bunny-special-fx.tga
+```
+
 To try your working copy in game, symlink the addon folder into your AddOns directory:
 
 ```sh
@@ -162,6 +188,10 @@ The code layout and state machine are described in [docs/ARCHITECTURE.md](docs/A
 2. Add release notes as `docs/releases/v<version>.md`. The tests require this file for the current TOC version.
 3. Commit, then create an annotated tag and push it: `git tag -a v0.2.1 -m "BunnyBar v0.2.1" && git push origin v0.2.1`.
 4. The [release workflow](.github/workflows/release.yml) validates, builds and verifies the ZIP, writes a SHA-256 checksum, and publishes a GitHub Release with those notes. It only publishes if every step passes and the tag matches the TOC version. Afterwards it downloads the published ZIP and checks it again.
+
+## Credits
+
+- **[PixelFX](https://github.com/patch-gg/pixelfx)** by Patch and Hugo Duprez (MIT): the development-time effects toolkit used to draw the style specials. It's not part of the addon. Its licence and notices are in [art/pixelfx/LICENSE-pixelfx.txt](art/pixelfx/LICENSE-pixelfx.txt).
 
 ## Known limitations
 
