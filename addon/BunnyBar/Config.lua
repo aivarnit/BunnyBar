@@ -336,6 +336,12 @@ Config.Handlers = {
         ns.Print(("fur colour set to #%s."):format(ns.db.furColor))
     end,
     ears = function(rest)
+        -- Development diagnostics (deliberately not in the help list).
+        if rest:lower() == "debug" then
+            local lines = ns.Ears.Describe()
+            for i = 1, #lines do ns.Print(lines[i]) end
+            return
+        end
         local which, state = rest:lower():match("^(%S*)%s*(%S*)$")
         local key = (which == "player" and "earsPlayer") or (which == "party" and "earsParty") or nil
         if not key or not (ON[state] or OFF[state]) then

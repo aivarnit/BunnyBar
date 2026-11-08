@@ -169,6 +169,7 @@ function Region:GetFrameStrata()
     return "MEDIUM"
 end
 function Region:GetParent() return self._parent end
+function Region:GetName() return self._name end
 -- Frames only (textures and font strings are regions, not children).
 function Region:GetChildren()
     local out = {}
@@ -288,6 +289,7 @@ function M.install(env)
         end
         local f = newRegion(kind, parent)
         f._template = template
+        f._name = name
         table.insert(M.frames, f)
         if name then rawset(env, name, f) end
         return f

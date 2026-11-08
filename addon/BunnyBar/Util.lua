@@ -200,9 +200,9 @@ function Util.ReadRect(f)
     if type(f) ~= "table" then return nil end
     local ok, l, r, b, t, scale = pcall(readRect, f)
     if not ok then return nil end
-    for _, v in ipairs({ l, r, b, t, scale }) do
-        if not Util.IsUsableNumber(v) then return nil end
-    end
+    -- (Not ipairs over {l, r, b, t, scale}: ipairs stops at the first nil.)
+    local U = Util.IsUsableNumber
+    if not (U(l) and U(r) and U(b) and U(t) and U(scale)) then return nil end
     if scale <= 0 or r <= l or t <= b then return nil end
     local k = scale / UIParent:GetEffectiveScale()
     return l * k, r * k, b * k, t * k

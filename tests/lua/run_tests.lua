@@ -1870,15 +1870,20 @@ local function mkLayeredPlayer(opts)
     local cont = CreateFrame("Frame", nil, pf)
     cont._level = opts.containerLevel or 6
     cont._strata = opts.containerStrata
+    cont:SetMockRect(80, 880, 230, 100)
     pf.PlayerFrameContainer = cont
     local p = cont:CreateTexture(nil, "BACKGROUND")
     p:SetMockRect(100, 900, 60, 60)
     cont.PlayerPortrait = p
+    -- Decorative ring drawn over the portrait edge (overlaps the ears).
     local ring = CreateFrame("Frame", nil, cont)
     ring._level = opts.ringLevel or 8
+    ring:SetMockRect(96, 896, 68, 68)
     pf.Ring = ring
+    -- Edit Mode selection highlight covering the whole unit frame.
     local sel = CreateFrame("Frame", nil, pf)
     sel._strata, sel._level = "DIALOG", 900
+    sel:SetMockRect(80, 880, 230, 100)
     sel:Hide()
     pf.Selection = sel
     return pf
@@ -1905,17 +1910,15 @@ test("layering: a container with its own higher strata wins", function()
     eq(strata, "MEDIUM", "higher strata beats any level"); eq(level, 14)
 end)
 
-test("layering: hidden frames (Edit Mode selection) are ignored until shown", function()
+test("layering: Edit Mode selection overlays never lift the ears", function()
     local ns2 = boot(nil, { setup = function() mkLayeredPlayer() end })
     eq(select(1, earsLayer(ns2)), "LOW")
     -- In Edit Mode the selection overlay is shown at DIALOG/900.
     PlayerFrame.Selection:Show()
     ns2.Ears.Refresh()
     local strata, level = earsLayer(ns2)
-    eq(strata, "DIALOG"); eq(level, 910)
+    eq(strata, "LOW", "not lifted to DIALOG"); eq(level, 18)
     PlayerFrame.Selection:Hide()
-    ns2.Ears.Refresh()
-    eq(select(1, earsLayer(ns2)), "LOW", "back to normal after Edit Mode")
 end)
 
 test("Edit Mode drag: raised frames and new position picked up on drop", function()
@@ -1924,6 +1927,8 @@ test("Edit Mode drag: raised frames and new position picked up on drop", functio
     -- Dragging raises the unit frame (whole subtree re-levelled) and moves it.
     PlayerFrame._level, PlayerFrame.PlayerFrameContainer._level, PlayerFrame.Ring._level = 505, 506, 508
     PlayerFrame.PlayerFrameContainer.PlayerPortrait:SetMockRect(400, 600, 60, 60)
+    PlayerFrame.PlayerFrameContainer:SetMockRect(380, 580, 230, 100)
+    PlayerFrame.Ring:SetMockRect(396, 596, 68, 68)
     PlayerFrame.Selection._hooks.OnDragStop[1](PlayerFrame.Selection)
     mock.advance(0.15)
     local e = ears(ns2).player
@@ -2041,6 +2046,211 @@ test("reload: same layout gives the same layer and position", function()
     local a = { run() }
     local b = { run() }
     for i = 1, 4 do eq(a[i], b[i]) end
+end)
+
+-- Helpers for the Edit Mode scenarios.
+local function editModeAPI(rec)
+    EventRegistry = { RegisterCallback = function(_, ev, fn, owner) rec[ev] = { fn, owner } end }
+end
+local function fireCallback(rec, ev) local cb = rec[ev]; cb[1](cb[2]) end
+local function setPlayerLevels(unit, cont, ring)
+    PlayerFrame._level, PlayerFrame.PlayerFrameContainer._level, PlayerFrame.Ring._level = unit, cont, ring
+end
+local function settleEars(ns2, limit)
+    local t0 = mock.now
+    while (ns2.Ears.IsRefreshPending()) do
+        if mock.now - t0 > (limit or 10) then error("ears refresh never settled") end
+        mock.advance(1 / 60)
+    end
+    return mock.now - t0
+end
+
+test("Edit Mode raises levels, then restores them later: ears follow both", function()
+    local rec = {}
+    local ns2 = boot(nil, { setup = function() editModeAPI(rec); mkLayeredPlayer() end })
+    eq(select(2, earsLayer(ns2)), 18, "A: before Edit Mode")
+    fireCallback(rec, "EditMode.Enter")
+    setPlayerLevels(600, 601, 608) -- drag raises the subtree
+    PlayerFrame.Selection._hooks.OnDragStop[1](PlayerFrame.Selection)
+    mock.advance(0.15)
+    eq(select(2, earsLayer(ns2)), 618, "in front of the raised ring right after the drop")
+    fireCallback(rec, "EditMode.Exit")
+    -- Blizzard restores normal levels 1 s after exit (after our first pass).
+    C_Timer.After(1.0, function() setPlayerLevels(5, 6, 8) end)
+    mock.advance(0.15)
+    eq(select(2, earsLayer(ns2)), 618)
+    settleEars(ns2)
+    eq(select(2, earsLayer(ns2)), 18, "re-check caught the restore: same as after /reload")
+end)
+
+test("a portrait descendant changing strata (no movement) is picked up", function()
+    local rec = {}
+    local ns2 = boot(nil, { setup = function() editModeAPI(rec); mkLayeredPlayer() end })
+    fireCallback(rec, "EditMode.Exit")
+    C_Timer.After(0.5, function() PlayerFrame.Ring._strata = "MEDIUM" end)
+    settleEars(ns2)
+    local strata, level = earsLayer(ns2)
+    eq(strata, "MEDIUM"); eq(level, 18)
+    near(ears(ns2).player.rect[1], 130, 1e-6, "position untouched")
+end)
+
+test("layout changes long after Edit Mode exit are caught by the bounded series", function()
+    local rec = {}
+    local ns2 = boot(nil, { setup = function() editModeAPI(rec); mkLayeredPlayer() end })
+    fireCallback(rec, "EditMode.Exit")
+    -- Applying the saved layout re-levels the container 2 s later.
+    C_Timer.After(2.0, function() PlayerFrame.PlayerFrameContainer._level = 700 end)
+    local took = settleEars(ns2)
+    eq(select(2, earsLayer(ns2)), 710)
+    truthy(took < 6, "series is bounded: " .. took)
+end)
+
+test("consecutive drags restart the series and end in the right place", function()
+    local rec = {}
+    local ns2 = boot(nil, { setup = function() editModeAPI(rec); mkLayeredPlayer() end })
+    local n = { calls = 0 }
+    local orig = ns2.Ears.ComputeLayer
+    ns2.Ears.ComputeLayer = function(...) n.calls = n.calls + 1; return orig(...) end
+    fireCallback(rec, "EditMode.Enter")
+    local drop = PlayerFrame.Selection._hooks.OnDragStop[1]
+    for i = 1, 3 do
+        local x = 100 + i * 100
+        PlayerFrame.PlayerFrameContainer.PlayerPortrait:SetMockRect(x, 900, 60, 60)
+        PlayerFrame.PlayerFrameContainer:SetMockRect(x - 20, 880, 230, 100)
+        PlayerFrame.Ring:SetMockRect(x - 4, 896, 68, 68)
+        setPlayerLevels(600 + i * 10, 601 + i * 10, 608 + i * 10)
+        drop(PlayerFrame.Selection)
+        mock.advance(0.3)
+    end
+    fireCallback(rec, "EditMode.Exit")
+    settleEars(ns2)
+    near(ears(ns2).player.rect[1], 430); eq(select(2, earsLayer(ns2)), 648)
+    -- Each burst: one debounced pass + at most #RECHECKS re-checks (x1 target).
+    truthy(n.calls <= 4 * (1 + #ns2.Ears.RECHECKS), "passes bounded: " .. n.calls)
+end)
+
+test("runtime refresh after Edit Mode equals a fresh /reload", function()
+    local rec = {}
+    local final = { x = 520, unit = 640, cont = 641, ring = 655, ringStrata = "MEDIUM" }
+    local function applyFinal()
+        local pf = PlayerFrame
+        pf.PlayerFrameContainer.PlayerPortrait:SetMockRect(final.x, 700, 60, 60)
+        pf.PlayerFrameContainer:SetMockRect(final.x - 20, 680, 230, 100)
+        pf.Ring:SetMockRect(final.x - 4, 696, 68, 68)
+        setPlayerLevels(final.unit, final.cont, final.ring)
+        pf.Ring._strata = final.ringStrata
+    end
+    -- Runtime: start default, then Edit Mode moves and re-levels things late.
+    local ns2 = boot(nil, { setup = function() editModeAPI(rec); mkLayeredPlayer() end })
+    fireCallback(rec, "EditMode.Enter")
+    PlayerFrame.Selection:Show()
+    PlayerFrame.Selection._hooks.OnDragStop[1](PlayerFrame.Selection)
+    PlayerFrame.Selection:Hide()
+    fireCallback(rec, "EditMode.Exit")
+    C_Timer.After(0.6, applyFinal)
+    settleEars(ns2)
+    local a = ears(ns2).player
+    local runtime = { a.strata, a.level, a.rect[1], a.rect[2], a.overlay:GetFrameStrata(), a.overlay:GetFrameLevel() }
+    -- Reload: boot straight into the final state.
+    ns2 = boot(nil, { setup = function() mkLayeredPlayer(); applyFinal() end })
+    local b = ears(ns2).player
+    local reload = { b.strata, b.level, b.rect[1], b.rect[2], b.overlay:GetFrameStrata(), b.overlay:GetFrameLevel() }
+    for i = 1, #reload do eq(runtime[i], reload[i], "field " .. i) end
+end)
+
+test("drift: the overlay's actual layer is corrected, not trusted from cache", function()
+    local ns2 = boot(nil, { setup = function() mkLayeredPlayer({ ringLevel = 40 }) end })
+    local o = ears(ns2).player.overlay
+    eq(o:GetFrameLevel(), 50)
+    o._level = 3 -- something else lowered our overlay
+    mock.fire("GROUP_ROSTER_UPDATE")
+    mock.advance(0.15)
+    eq(o:GetFrameLevel(), 50, "restored")
+    eq(ears(ns2).player.drift, 1)
+    -- SetFrameStrata resetting the level must not leave a stale level.
+    local origS = o.SetFrameStrata
+    o.SetFrameStrata = function(self, st) origS(self, st); self._level = 0 end
+    PlayerFrame.Ring._strata = "MEDIUM"
+    ns2.Ears.Refresh()
+    eq(o:GetFrameStrata(), "MEDIUM"); eq(o:GetFrameLevel(), 50, "level re-applied after strata change")
+    o.SetFrameStrata = nil
+end)
+
+test("only frames overlapping the ears count; never above HIGH", function()
+    local ns2 = boot(nil, { setup = function()
+        local pf = mkLayeredPlayer({ ringLevel = 8 })
+        -- A tall status widget elsewhere in the unit frame at a high level.
+        local far = CreateFrame("Frame", nil, pf)
+        far._level = 300
+        far:SetMockRect(250, 880, 40, 20)
+    end })
+    eq(select(2, earsLayer(ns2)), 18, "unrelated descendants don't lift the ears")
+    PlayerFrame.Ring._strata = "DIALOG"
+    ns2.Ears.Refresh()
+    local strata, level, src = earsLayer(ns2)
+    eq(strata, "HIGH"); eq(level, 9900); eq(src, "capped")
+end)
+
+test("non-Edit Mode triggers stop re-checking once nothing changes", function()
+    local ns2 = boot(nil, { setup = function() mkLayeredPlayer() end })
+    mock.advance(1)
+    local n = { calls = 0 }
+    local orig = ns2.Ears.ComputeLayer
+    ns2.Ears.ComputeLayer = function(...) n.calls = n.calls + 1; return orig(...) end
+    mock.fire("GROUP_ROSTER_UPDATE")
+    settleEars(ns2)
+    eq(n.calls, 1, "one pass, no re-checks when stable")
+end)
+
+test("in combat: reads only, bounded series, no OnUpdate", function()
+    local rec = {}
+    local ns2 = boot(nil, { setup = function() editModeAPI(rec); mkLayeredPlayer() end })
+    for _, f in ipairs({ PlayerFrame, PlayerFrame.PlayerFrameContainer, PlayerFrame.Ring }) do
+        f.SetFrameLevel = function() error("must not modify Blizzard frames") end
+        f.SetFrameStrata = function() error("must not modify Blizzard frames") end
+    end
+    mock.combat = true
+    fireCallback(rec, "EditMode.Exit")
+    C_Timer.After(0.4, function() PlayerFrame.Ring._level = 90 end)
+    local took = settleEars(ns2)
+    eq(select(2, earsLayer(ns2)), 100)
+    truthy(took <= 0.1 + 0.25 + 0.75 + 1.5 + 3.0 + 0.1, "bounded: " .. took)
+    eq(ears(ns2).player.overlay:GetScript("OnUpdate"), nil)
+    mock.combat = false
+end)
+
+test("/bunny ears debug reports names, layers and scheduling safely", function()
+    local rec = {}
+    local SECRET = {}
+    local ns2 = boot(nil, { setup = function()
+        editModeAPI(rec)
+        mkLayeredPlayer({ ringLevel = 40 })
+        local em = CreateFrame("Frame", "EditModeManagerFrame", UIParent)
+        function em:IsEditModeActive() return true end
+        mkParty(1)
+        issecretvalue = function(v) return v == SECRET end
+        PartyFrame.MemberFrame1.GetFrameLevel = function() return SECRET end
+    end })
+    fireCallback(rec, "EditMode.Exit")
+    local before = #mock.chat
+    eq(slash("ears debug"), true)
+    local text = table.concat(mock.chat, "\n", before + 1)
+    truthy(text:find("Edit Mode active: yes"), text)
+    truthy(text:find("refresh scheduled: yes"), text)
+    truthy(text:find("last trigger: EditMode.Exit"), text)
+    truthy(text:find("player: shown %(scan%)"), text)
+    truthy(text:find("unit frame PlayerFrame"), text)
+    truthy(text:find("portrait owner %(unnamed%) at LOW/6"), text)
+    truthy(text:find("highest overlapping %(unnamed%) at LOW/40"), text)
+    truthy(text:find("ears want LOW/50, have LOW/50, corrected drift 0"), text)
+    truthy(text:find("party1: shown"), text)
+    truthy(text:find("party1: shown %(fallback%)"), text) -- secret level -> safe fallback
+    truthy(text:find("at MEDIUM/%?"), text)                -- secret value printed as "?"
+    truthy(text:find("party2: hidden"), text)
+    -- The help list stays free of the debug command.
+    before = #mock.chat
+    slash("")
+    eq(table.concat(mock.chat, "\n", before + 1):find("debug"), nil)
 end)
 
 test("no per-frame work from ears or options while idle", function()

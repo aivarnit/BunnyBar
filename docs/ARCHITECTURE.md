@@ -109,12 +109,20 @@ v0.2.0 copied the unit frame's strata and used its level + 10. That fails becaus
 - the portrait texture is drawn by a nested frame (`PlayerFrame.PlayerFrameContainer`), and the ring and icons by other descendants. These carry their own level offsets and sometimes their own strata;
 - Edit Mode raises a frame when you drag it, which re-levels its whole subtree, so "unit frame + 10" could end up below the portrait's frame and part of the ears was hidden.
 
-`Ears.ComputeLayer` now takes the highest strata, and then the highest level within it, among:
+`Ears.ComputeLayer` takes the highest strata, and then the highest level within it, among:
 
-- the portrait's owner frame and its ancestors up to the unit frame;
-- every **shown** frame in the unit frame's subtree. The scan is bounded to 200 frames and depth 5; hidden subtrees, such as Edit Mode's `Selection` outside Edit Mode, don't draw and are skipped.
+- the portrait's owner frame and its ancestors up to the unit frame, which always count;
+- every **shown** frame in the unit frame's subtree whose rectangle **overlaps the ears**. Edit Mode `Selection` overlays are excluded, and the scan is bounded to 200 frames and depth 5.
 
-The ears go 10 levels above that, capped at 9900. Our overlays are parented to `UIParent`, so they're never part of the scan and repeated refreshes can't ratchet levels upward. Strata and level are only re-applied when they change. If no strata or level can be read (errors, secret values), the fallback is the `HIGH` strata, which puts the ears in front of default unit frames.
+The ears go 10 levels above that. Level is capped at 9900 and strata at `HIGH`, so dialogs, menus and tooltips stay on top. Our overlays are parented to `UIParent`, so they're never part of the scan and repeated refreshes can't ratchet levels upward. If no strata or level can be read (errors, secret values), the fallback is the `HIGH` strata.
+
+**Second pass (after the in-game report: "ears hidden after an Edit Mode move, fixed by `/reload`").** Comparing the reload path with the runtime path turned up three weaknesses:
+
+1. **Stale cache.** Layers were only re-applied when the *computed* value differed from the value we last *requested*, never from what the overlay actually had. A reload starts with an empty cache, so everything is applied fresh. At runtime, drift went unnoticed, for example when `SetFrameStrata` resets the level or a strata-only change keeps an old level. Now `applyLayer` compares against the overlay's **actual** `GetFrameStrata()`/`GetFrameLevel()`, always sets strata before level, and counts corrections as "drift".
+2. **Timing.** An Edit Mode trigger got one pass plus a single re-check 0.5 s later. If Blizzard re-levels or re-parents frames after that, for example while applying the saved layout on exit, the position doesn't change and nothing re-checked. Now every trigger is debounced (0.1 s) and followed by bounded re-checks at +0.25, +0.75, +1.5 and +3.0 s. Edit Mode triggers always run the whole series; other triggers stop at the first pass that changes nothing. Each pass compares visibility, position, size, strata and level. A new trigger restarts the series.
+3. **Scan scope.** Edit Mode's `Selection` overlay could lift the ears to `DIALOG` while editing, and descendants that don't overlap the ears counted too. Both are now excluded.
+
+The code can't prove which of these Forever actually hits, so all three are fixed. `/bunny ears debug` exists to confirm it in game.
 
 **Edit Mode.** Drops are caught with `OnDragStop`/`OnMouseUp` post-hooks on each unit frame's `Selection` child and the `EventRegistry` callbacks `EditMode.Enter` / `EditMode.Exit`, plus the existing `EditModeManagerFrame` `OnHide` and `EDIT_MODE_LAYOUTS_UPDATED`. While dragging, the ears catch up when the mouse is released, not continuously. In Edit Mode the shown `Selection` overlay can lift the ears to its strata, which keeps them visible while editing.
 - Defensive guard: if an overlay ever reported `IsProtected()` in combat, changes would wait for combat to end.
@@ -314,6 +322,11 @@ Run these in WoW Forever and note the client build (shown on the login screen):
 15. **v0.2 options:** Esc → Options → AddOns lists **BunnyBar**, and `/bunny options` opens it. In combat it opens when combat ends. All controls render: square, hue and brightness gradients, hex box, swatch, preview bunny, radios, checkboxes.
 16. **v0.2 colour:** drag the square and both sliders, then type `#FFB6C1`, `#87CEEB`, `#000000`, `#FFFFFF` and an invalid value. The bunny and the portrait ears change instantly while the eyes, nose, inner ears and outline stay the same. Watch a hop and a full nap in a non-default colour. `/bunny color #87CEEB` updates the open panel.
 17. **v0.2 size:** try each of the five presets (Tiny, Small, Regular, Large, Huge) and check that all five radios fit without overlapping "Portrait Accessories". Then try `/bunny size 48`, which should show "Custom: 48". Check the pixels look sharp and the bunny still sits right on the bar.
-18. **v0.2 ear layering:** in Edit Mode, drag the player frame and a party frame to new spots and drop them. Both ears should stay fully in front of the portrait and its ring, both while Edit Mode is open and after you leave it. Repeat after `/reload`, after changing the UI scale, and after combat. If an ear is clipped, `/fstack` over it and note the strata and level of the portrait, the ring and the ears.
+18. **v0.2 ear layering (A/B/C diagnostics):** run `/bunny ears debug`:
+    - **A**, before Edit Mode;
+    - **B**, after moving the player and a party frame in Edit Mode and leaving it. Wait about 5 s so the re-checks finish;
+    - **C**, after `/reload`.
+
+    The ears should be fully in front of the portrait and ring in B, with no reload. In B and C, "ears want" should equal "have", and the strata/levels should match. If the ears are still clipped in B, please send all three outputs. A growing "corrected drift" count or a later re-check fixing it points to timing. An overlapping frame above the ears' level points to a frame that isn't inside the unit frame. Repeat after changing the UI scale and after combat.
 19. **v0.2 ears:** the ears sit on top of your portrait and on party portraits. Join, leave and re-sort a party. Toggle both checkboxes. Move the player frame in Edit Mode and change the UI scale. Check that clicking and targeting the portraits still works, including in combat, and that there are no "Interface action failed because of an AddOn" or `ADDON_ACTION_BLOCKED` messages after combat, roster changes or `/reload` in combat. Record the portrait frame names with `/fstack` if no ears appear.
 20. **v0.2 upgrade:** with a v0.1 `BunnyBarDB`, check that size 32, position, speed and the other settings survive. `/bunny reset` should give Regular (64), the default colour and an updated open panel.
