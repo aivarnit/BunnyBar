@@ -257,7 +257,7 @@ end)
 test("ten simulated minutes: bounded, smooth, flips, rests, mostly idle", function()
     math.randomseed(42)
     -- Balanced without moods = the exact v0.3 scheduler (moods vary waits).
-    local ns2 = boot({ moods = false })
+    local ns2 = boot({ schema = 5, moods = false }) -- schema set: keeps the size-64 default
     local B = ns2.Bunny
     local db = BunnyBarDB
     local minX, maxX = ns2.Util.TrackBounds(db.trackWidth, db.size)
