@@ -13,7 +13,8 @@ ns.Config = Config
 -- 1: v0.1 (size default 32). 2: appearance, portrait ears, size default 64.
 -- 3: styles, idle behaviours, burrowing, hover hearts.
 -- 4: furColor is an optional override (nil = use the style's default).
-Config.SCHEMA_VERSION = 4
+-- 5: personality and mood system.
+Config.SCHEMA_VERSION = 5
 Config.LEGACY_DEFAULT_SIZE = 32
 
 -- Default settings. `point == nil` means "auto": place the track just above
@@ -46,6 +47,9 @@ Config.DEFAULTS = {
     -- Interactions (see Hearts.lua)
     hearts = true,
     heartIntensity = "normal",  -- subtle | normal | extra
+    -- Personality / moods (see Personality.lua)
+    personality = "balanced",   -- balanced | lazy | energetic | playful | sleepy
+    moods = true,
     -- Saved position (nil = auto placement above the bottom bars).
     point = nil, relativePoint = nil, x = nil, y = nil,
 }
@@ -99,6 +103,7 @@ end
 Config.ENUMS = {
     burrowFrequency = { "rare", "normal", "often" },
     heartIntensity = { "subtle", "normal", "extra" },
+    personality = { "balanced", "lazy", "energetic", "playful", "sleepy" },
 }
 
 local function enumValidator(key)
@@ -116,6 +121,7 @@ end
 local STRING_VALIDATORS = {
     burrowFrequency = enumValidator("burrowFrequency"),
     heartIntensity = enumValidator("heartIntensity"),
+    personality = enumValidator("personality"),
     furColor = function(v) return (Util.ParseHex(v)) end,
     variation = function(v)
         return ns.Appearance and ns.Appearance.IsValid("variation", v) and v or nil
@@ -344,6 +350,8 @@ local HELP = {
     "|cffffd200/bunny test [hop|carrot|wash|scratch|stretch|look|burrow|nap|hearts]|r - try a behaviour",
     "|cffffd200/bunny idle|carrot|burrow <on|off>|r, |cffffd200/bunny burrow rare|normal|often|r - behaviours",
     "|cffffd200/bunny hearts <on|off|subtle|normal|extra>|r - hover hearts",
+    "|cffffd200/bunny personality <balanced|lazy|energetic|playful|sleepy>|r - personality",
+    "|cffffd200/bunny mood [on|off]|r - current mood and personality",
     "|cffffd200/bunny stats|r - performance and status info",
     "|cffffd200/bunny bars|r - show which bottom bars the bunny detected",
 }
@@ -475,6 +483,31 @@ Config.Handlers = {
             return false
         end
         ns.Print(("idle behaviours: %s."):format(ns.db.idleExtras and "on" or "off"))
+    end,
+    personality = function(rest)
+        local v = rest:lower()
+        if v == "" then
+            ns.Print(("personality is %s. Choose %s."):format(
+                ns.Personality.LABELS[ns.Personality.Current()], table.concat(Config.ENUMS.personality, ", ")))
+            return
+        end
+        local ok, err = Config.Set("personality", v)
+        if not ok then
+            printError(("'%s' is not a personality. Choose %s."):format(rest, table.concat(Config.ENUMS.personality, ", ")))
+            return false
+        end
+        ns.Print(("personality set to %s."):format(ns.Personality.LABELS[ns.db.personality]))
+    end,
+    mood = function(rest)
+        local v = rest:lower()
+        if ON[v] or OFF[v] then
+            Config.Set("moods", ON[v] and true or false)
+        elseif v ~= "" and v ~= "debug" then
+            printError("use /bunny mood, /bunny mood on|off or /bunny mood debug.")
+            return false
+        end
+        local lines = ns.Personality.Describe(v == "debug")
+        for i = 1, #lines do ns.Print(lines[i]) end
     end,
     carrot = function(rest)
         local v = rest:lower()

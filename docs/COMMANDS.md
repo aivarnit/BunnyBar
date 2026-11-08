@@ -22,6 +22,8 @@ All commands start with `/bunny`, or the alias `/bunnybar`. Command words aren't
 | `/bunny test nap`, `/bunny test hop` | Take a nap now, or hop (same as `/bunny test`). |
 | `/bunny test hearts` | A short burst of hover hearts (hearts must be on). |
 | `/bunny style <classic\|devil\|angel\|dragon\|zombie>` | Change the bunny's style. If you haven't picked your own fur colour, the style's default colour comes with it. `/bunny style` on its own lists the styles. |
+| `/bunny personality <balanced\|lazy\|energetic\|playful\|sleepy>` | Set the bunny's personality (it changes which behaviours it picks, not how they look). `/bunny personality` on its own shows the current one. |
+| `/bunny mood` | Show the current mood and personality. `/bunny mood on\|off` switches the mood system; `/bunny mood debug` also shows the mood counters, the current chances and behaviour weights, and when the next decision is due. It only prints when you ask. |
 | `/bunny hearts on\|off\|subtle\|normal\|extra` | Hover hearts on or off, or set their intensity (which also turns them on). |
 | `/bunny burrow on\|off\|rare\|normal\|often` | Burrowing on or off, or set how often (which also turns it on). |
 | `/bunny idle on\|off` | Idle behaviours: carrot, face washing, scratching, stretching, looking around. |

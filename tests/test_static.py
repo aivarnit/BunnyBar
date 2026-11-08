@@ -57,7 +57,7 @@ class TocTests(unittest.TestCase):
         self.assertEqual(r.errors, [])
         self.assertEqual(meta["Interface"], "16001")
         self.assertEqual(files, ["Util.lua", "Config.lua", "Appearance.lua", "SpriteData.lua",
-                                 "Placement.lua", "Animation.lua", "Hearts.lua", "Ears.lua",
+                                 "Placement.lua", "Animation.lua", "Personality.lua", "Hearts.lua", "Ears.lua",
                                  "Options.lua", "Core.lua"])
 
     def test_missing_listed_file_is_caught(self):
@@ -632,7 +632,8 @@ class DocsTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text()
         for cmd in ["show", "hide", "lock", "unlock", "reset", "size", "speed",
                     "interval", "width", "height", "test", "stats", "bars", "options",
-                    "color", "ears", "style", "hearts", "burrow", "idle", "carrot"]:
+                    "color", "ears", "style", "hearts", "burrow", "idle", "carrot",
+                    "personality", "mood"]:
             self.assertIn(cmd, config)
             self.assertIn(f"/bunny {cmd}", commands, cmd)
             self.assertIn(f"/bunny {cmd}", readme, cmd)

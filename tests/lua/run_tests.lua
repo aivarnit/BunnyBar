@@ -256,7 +256,8 @@ end)
 
 test("ten simulated minutes: bounded, smooth, flips, rests, mostly idle", function()
     math.randomseed(42)
-    local ns2 = boot(nil)
+    -- Balanced without moods = the exact v0.3 scheduler (moods vary waits).
+    local ns2 = boot({ moods = false })
     local B = ns2.Bunny
     local db = BunnyBarDB
     local minX, maxX = ns2.Util.TrackBounds(db.trackWidth, db.size)
@@ -378,7 +379,7 @@ local STEP = 1 / 120
 -- Boot with naps forced and advance until the nap starts (state "drowsy").
 local function bootNap(seed)
     math.randomseed(seed or 11)
-    local ns2 = boot({ sleepChance = 1 })
+    local ns2 = boot({ sleepChance = 1, moods = false }) -- v0.3 nap behaviour
     mock.advance(1.05) -- one-shot post-login layout timer
     for _ = 1, 2000 do
         if ns2.Bunny:GetDebugState().state == "drowsy" then return ns2 end
@@ -1345,7 +1346,7 @@ test("v0.1 settings are preserved, new keys get defaults", function()
         point = "BOTTOM", relativePoint = "BOTTOM", x = 15, y = 300 }
     boot(old)
     local db = BunnyBarDB
-    eq(db.schema, 4)
+    eq(db.schema, 5)
     for k, v in pairs(old) do if k ~= "schema" then eq(db[k], v, k) end end
     eq(db.furColor, nil, "no override"); eq(ns.Config.FurColor(db), "F6F3FA"); eq(db.variation, "classic"); eq(db.hat, "none")
     eq(db.earsPlayer, true); eq(db.earsParty, true)
@@ -2710,7 +2711,7 @@ end)
 test("schema 2 settings migrate to 3 with behaviour and heart defaults", function()
     boot({ schema = 2, size = 96, furColor = "112233", variation = "classic", earsParty = false, speed = 1.5 })
     local db = BunnyBarDB
-    eq(db.schema, 4); eq(db.size, 96); eq(db.furColor, "112233"); eq(db.earsParty, false); eq(db.speed, 1.5)
+    eq(db.schema, 5); eq(db.size, 96); eq(db.furColor, "112233"); eq(db.earsParty, false); eq(db.speed, 1.5)
     eq(db.idleExtras, true); eq(db.carrot, true); eq(db.burrow, true); eq(db.burrowFrequency, "normal")
     eq(db.hearts, true); eq(db.heartIntensity, "normal"); eq(db.variation, "classic")
     boot({ schema = 3, burrowFrequency = "SOMETIMES", heartIntensity = "EXTRA", variation = "Devil" })
@@ -3059,7 +3060,7 @@ test("older saves: a stored style default becomes 'no override', custom colours 
     for i, case in ipairs(cases) do
         local ns2 = boot(case[1])
         eq(BunnyBarDB.furColor, case[2], "case " .. i)
-        eq(BunnyBarDB.schema, 4)
+        eq(BunnyBarDB.schema, 5)
     end
 end)
 
@@ -3187,6 +3188,355 @@ test("ear visibility toggles keep layering, anchoring and click-through", functi
     eq(o:GetFrameStrata(), strata); eq(o:GetFrameLevel(), level)
     local _, rel = o:GetPoint(1)
     eq(rel, UIParent); eq(o:IsMouseEnabled(), false)
+end)
+
+----------------------------------------------------------------------------
+-- v0.4: personalities and moods
+----------------------------------------------------------------------------
+
+io.write("v0.4 personalities and moods\n")
+
+local PERSONALITIES = { "balanced", "lazy", "energetic", "playful", "sleepy" }
+
+-- Long seeded simulation; returns stats and behaviour/stretch-after-wake counts.
+local function simulate(saved, minutes, seed)
+    math.randomseed(seed or 101)
+    local ns2 = boot(saved)
+    local wakeStretch, prev, asleep = 0, nil, 0
+    mock.advance(minutes * 60, 1 / 10, function()
+        local s = ns2.Bunny:GetDebugState()
+        if prev == "waking" and s.state == "behavior" and s.behavior == "stretch" then wakeStretch = wakeStretch + 1 end
+        if s.state == "sleep" or s.state == "liedown" or s.state == "drowsy" then asleep = asleep + 0.1 end
+        prev = s.state
+    end)
+    local s = ns2.Bunny:GetDebugState()
+    s.asleep = asleep
+    return s, wakeStretch, ns2
+end
+
+test("personality: default Balanced, slash selection, validation, persistence", function()
+    local ns2 = boot(nil)
+    eq(BunnyBarDB.personality, "balanced"); eq(BunnyBarDB.moods, true)
+    eq(slash("personality"), true); truthy(lastChat():find("personality is Balanced"))
+    for _, id in ipairs(PERSONALITIES) do
+        eq(slash("personality " .. id:upper()), true, id)
+        eq(BunnyBarDB.personality, id)
+        truthy(lastChat():find("personality set to"), lastChat())
+    end
+    eq(slash("personality grumpy"), false)
+    truthy(lastChat():find("'grumpy' is not a personality"), lastChat())
+    eq(BunnyBarDB.personality, "sleepy", "unchanged after bad input")
+    local saved = BunnyBarDB
+    boot(saved)
+    eq(BunnyBarDB.personality, "sleepy", "persists across /reload")
+end)
+
+test("Balanced without moods is exactly the v0.3 scheduler", function()
+    local ns2 = boot({ schema = 5, moods = false })
+    local P = ns2.Personality.Params()
+    eq(P.nap, 1); eq(P.burrow, 1); eq(P.behavior, 1); eq(P.wait, 1); eq(P.sleep, 1); eq(P.wakeStretch, 0)
+    for _, name in ipairs(ns2.Bunny.BEHAVIOR_ORDER) do eq(P.weights[name], 1, name) end
+    eq(ns2.Personality.Chance(0.15, 1), 0.15)
+    -- Happy is neutral too: Balanced + Happy = v0.3.
+    BunnyBarDB.moods = true
+    ns2.Personality.Reset()
+    P = ns2.Personality.Params()
+    eq(P.nap, 1); eq(P.behavior, 1); eq(P.wait, 1); eq(P.burrow, 1)
+end)
+
+test("personalities change behaviour selection as described (seeded)", function()
+    local function run(id)
+        return (simulate({ schema = 5, personality = id, moods = false, burrowFrequency = "often" }, 60, 202))
+    end
+    local r = {}
+    for _, id in ipairs(PERSONALITIES) do r[id] = run(id) end
+    local function carrots(s) return s.behaviors.carrot or 0 end
+    local function behaviours(s) local n = 0 for _, v in pairs(s.behaviors) do n = n + v end return n end
+    truthy(r.energetic.hops > r.balanced.hops and r.balanced.hops > r.lazy.hops,
+        ("hops: energetic %d > balanced %d > lazy %d"):format(r.energetic.hops, r.balanced.hops, r.lazy.hops))
+    truthy(r.sleepy.naps > r.balanced.naps and r.balanced.naps > r.energetic.naps,
+        ("naps: sleepy %d > balanced %d > energetic %d"):format(r.sleepy.naps, r.balanced.naps, r.energetic.naps))
+    truthy(r.lazy.asleep > r.balanced.asleep * 1.25,
+        ("time asleep: lazy %.0fs > balanced %.0fs"):format(r.lazy.asleep, r.balanced.asleep))
+    truthy(r.sleepy.asleep > r.lazy.asleep, "sleepy sleeps the most")
+    truthy(r.playful.burrows > r.balanced.burrows,
+        ("burrows: playful %d > balanced %d"):format(r.playful.burrows, r.balanced.burrows))
+    truthy(carrots(r.playful) > carrots(r.balanced),
+        ("carrots: playful %d > balanced %d"):format(carrots(r.playful), carrots(r.balanced)))
+    truthy(behaviours(r.energetic) > behaviours(r.lazy), "energetic does more idle activities overall")
+end)
+
+test("Sleepy (and Lazy) sometimes stretch right after waking; Balanced never", function()
+    local _, sleepyStretch = simulate({ schema = 5, personality = "sleepy", moods = false }, 60, 303)
+    local _, balancedStretch = simulate({ schema = 5, personality = "balanced", moods = false }, 60, 303)
+    truthy(sleepyStretch >= 2, "sleepy wake stretches: " .. sleepyStretch)
+    eq(balancedStretch, 0)
+end)
+
+test("personalities never change animation speed or sprites", function()
+    for _, id in ipairs(PERSONALITIES) do
+        local ns2 = boot({ schema = 5, personality = id, variation = "devil", size = 64, speed = 1.5 })
+        local fur = bunnyLayers()
+        truthy(fur._texture:find("devil"), id)
+        eq(fur:GetWidth(), 64)
+        eq(ns2.Bunny.HOP_TIMING.prep, 0.09)
+        eq(BunnyBarDB.speed, 1.5)
+        eq(ns2.Bunny.SEQUENCES.carrot[1][2], 0.30)
+    end
+end)
+
+test("moods evolve deterministically on activity events, with hysteresis", function()
+    local ns2 = boot({ schema = 5 })
+    local M = ns2.Personality
+    M.Reset()
+    eq(M.Mood(), "happy")
+    local seen = {}
+    for i = 1, 8 do M.OnEvent("hop"); seen[i] = M.Mood() end
+    eq(seen[1], "happy"); eq(M.Mood(), "sleepy", "tired after many hops")
+    eq(M.GetState().counters.tired >= 6, true)
+    M.OnEvent("nap")
+    truthy(M.Mood() ~= "sleepy", "a nap satisfies sleepiness at once (no dwell needed)")
+    eq(M.GetState().counters.tired, 0)
+    -- (8 hops also made it hungry, so it may now be hungry rather than happy.)
+    M.OnEvent("carrot")
+    eq(M.Mood(), "happy", "fed and rested: happy again")
+    -- Hunger: idle behaviours and hops add hunger; a carrot clears it.
+    M.Reset()
+    for _ = 1, 14 do M.OnEvent("wash") end
+    truthy(M.Mood() == "hungry" or M.Mood() == "playful", "needs grew: " .. M.Mood())
+    M.Reset()
+    for _ = 1, 9 do M.OnEvent("hop") ; M.OnEvent("look") end
+    M.OnEvent("carrot")
+    eq(M.GetState().counters.hungry, 0, "carrot clears hunger")
+    -- Same events -> same moods (deterministic, no randomness).
+    local function trace()
+        M.Reset()
+        local out = {}
+        for i, e in ipairs({ "hop", "hop", "wash", "burrow", "hop", "look", "hop", "carrot", "hop", "hop", "nap", "stretch" }) do
+            M.OnEvent(e); out[i] = M.Mood()
+        end
+        return table.concat(out, ",")
+    end
+    math.randomseed(1); local a = trace()
+    math.randomseed(999); local b = trace()
+    eq(a, b)
+end)
+
+test("moods don't oscillate rapidly", function()
+    local ns2 = boot({ schema = 5, personality = "playful" })
+    local M = ns2.Personality
+    M.Reset()
+    -- Alternate events that push opposite needs.
+    local events = { "burrow", "wash", "look", "hop", "scratch", "burrow", "look", "wash" }
+    for i = 1, 200 do M.OnEvent(events[i % #events + 1]) end
+    truthy(M.GetState().changes <= 200 / ns2.Personality.MIN_DWELL,
+        "changes " .. M.GetState().changes)
+end)
+
+test("personality influences how fast moods change", function()
+    local function hopsToSleepy(id)
+        local ns2 = boot({ schema = 5, personality = id })
+        local M = ns2.Personality
+        M.Reset()
+        for i = 1, 30 do
+            M.OnEvent("hop")
+            if M.Mood() == "sleepy" then return i end
+        end
+        return 99
+    end
+    truthy(hopsToSleepy("sleepy") < hopsToSleepy("balanced"), "sleepy tires faster")
+    truthy(hopsToSleepy("balanced") < hopsToSleepy("energetic"), "energetic tires slower")
+end)
+
+test("moods shift behaviour weights and chances", function()
+    local ns2 = boot({ schema = 5 })
+    local M, B = ns2.Personality, ns2.Bunny
+    local function share(target)
+        local n = 0
+        for i = 1, 1000 do
+            if B.PickBehavior(function() return (i - 0.5) / 1000 end) == target then n = n + 1 end
+        end
+        return n / 1000
+    end
+    M.SetMood("happy"); local happyCarrot = share("carrot")
+    M.SetMood("hungry"); local hungryCarrot = share("carrot")
+    truthy(hungryCarrot > happyCarrot * 2, ("carrot share hungry %.2f vs happy %.2f"):format(hungryCarrot, happyCarrot))
+    eq(M.Params().behavior, 1.6)
+    M.SetMood("sleepy"); eq(M.Params().nap, 2.0)
+    M.SetMood("playful"); eq(M.Params().burrow, 1.8); truthy(M.Params().wait < 1)
+    eq(M.Chance(0.6, 2.0), M.CHANCE_CAP, "chances are capped")
+end)
+
+test("no immediate repetition; Playful avoids the last two behaviours", function()
+    for _, id in ipairs({ "balanced", "playful" }) do
+        math.randomseed(17)
+        local ns2 = boot({ schema = 5, personality = id, burrow = false, sleepChance = 0 })
+        local history = {}
+        local prev
+        mock.advance(1800, 1 / 10, function()
+            local s = ns2.Bunny:GetDebugState()
+            if s.state == "behavior" and s.behavior ~= prev then history[#history + 1] = s.behavior end
+            prev = s.state == "behavior" and s.behavior or nil
+        end)
+        truthy(#history >= 20, id .. " behaviours: " .. #history)
+        for i = 2, #history do
+            truthy(history[i] ~= history[i - 1], id .. ": repeated " .. history[i])
+            if id == "playful" and i >= 3 then
+                truthy(history[i] ~= history[i - 2], "playful repeated within two: " .. history[i])
+            end
+        end
+    end
+end)
+
+test("mood system off: no mood, events ignored, /bunny mood reports it", function()
+    local ns2 = boot({ schema = 5 })
+    eq(slash("mood off"), true); eq(BunnyBarDB.moods, false)
+    truthy(lastChat():find("mood system: off"), lastChat())
+    local M = ns2.Personality
+    eq(M.Mood(), nil)
+    local before = M.GetState().counters.tired
+    for _ = 1, 10 do M.OnEvent("hop") end
+    eq(M.GetState().counters.tired, before, "events ignored")
+    eq(M.Params().nap, 1)
+    eq(slash("mood on"), true)
+    eq(slash("mood"), true); truthy(lastChat():find("personality: Balanced | mood: Happy"), lastChat())
+    eq(slash("mood sideways"), false)
+end)
+
+test("/bunny mood debug shows weights and the next decision, only when asked", function()
+    local ns2 = boot({ schema = 5, personality = "lazy" })
+    mock.advance(1.05)
+    local before = #mock.chat
+    mock.advance(120) -- no chat output from the mood system on its own
+    eq(#mock.chat, before, "no continuous logging")
+    advanceUntil(ns2, function(s) return s.state == "idle" end, 30)
+    eq(slash("mood debug"), true)
+    local text = table.concat(mock.chat, "\n", before + 1)
+    truthy(text:find("personality: Lazy"), text)
+    truthy(text:find("counters: tired"), text)
+    truthy(text:find("chances: nap %d+%%"), text)
+    truthy(text:find("behaviour weights: carrot %d+%%"), text)
+    truthy(text:find("next decision in %d"), text)
+end)
+
+test("mood events fire only for completed activities", function()
+    local ns2 = boot({ schema = 5 })
+    mock.advance(1.05)
+    local M = ns2.Personality
+    M.Reset()
+    -- Interrupted carrot: no event.
+    slash("test carrot")
+    advanceUntil(ns2, function(s) return s.pose == "carrotHold" end, 10)
+    slash("hide")
+    eq(M.GetState().lastEvent, nil, "hidden mid-carrot")
+    slash("show")
+    -- Completed carrot: event.
+    slash("test carrot")
+    advanceUntil(ns2, function(s) return s.state == "idle" end, 10)
+    eq(M.GetState().lastEvent, "carrot")
+    -- Completed burrow and hop journey.
+    slash("test burrow")
+    advanceUntil(ns2, function(s) return s.state == "idle" end, 15)
+    eq(M.GetState().lastEvent, "burrow")
+    slash("test")
+    advanceUntil(ns2, function(s) return s.state == "idle" end, 15)
+    eq(M.GetState().lastEvent, "hop")
+    -- Interrupting a nap (test hop) doesn't count as a nap.
+    slash("test nap")
+    advanceUntil(ns2, function(s) return s.state == "sleep" end, 10)
+    slash("test")
+    eq(M.GetState().lastEvent, "hop")
+end)
+
+test("moods add no timers and no idle frame updates", function()
+    local function run(moods)
+        math.randomseed(55)
+        local ns2 = boot({ schema = 5, moods = moods, personality = "playful" })
+        local maxTimers, updates, idleUpdates = 0, 0, 0
+        mock.advance(900, 1 / 20, function()
+            local s = ns2.Bunny:GetDebugState()
+            if s.onUpdate then updates = updates + 1; if s.state ~= "air" then idleUpdates = idleUpdates + 1 end end
+            local t = mock.pendingTimers()
+            if t > maxTimers then maxTimers = t end
+        end)
+        return maxTimers, idleUpdates
+    end
+    local tOn, idleOn = run(true)
+    local tOff, idleOff = run(false)
+    eq(idleOn, 0); eq(idleOff, 0)
+    truthy(tOn <= tOff + 1 and tOn <= 7, ("pending timers with moods %d, without %d"):format(tOn, tOff))
+end)
+
+test("schema 4 saves migrate without touching appearance, ears, colour or position", function()
+    local old = { schema = 4, variation = "dragon", furColor = "FFFFFF", size = 96, earsPlayer = false,
+        earsParty = true, point = "BOTTOM", relativePoint = "BOTTOM", x = -40, y = 300, hearts = false }
+    local ns2 = boot(old, { setup = function() mkParty(1) end })
+    local db = BunnyBarDB
+    eq(db.schema, 5); eq(db.personality, "balanced"); eq(db.moods, true)
+    for k, v in pairs(old) do if k ~= "schema" then eq(db[k], v, k) end end
+    eq(ns2.Ears.GetState().player.shown, false); eq(ns2.Ears.GetState().party1.shown, true)
+    boot({ schema = 5, personality = "Grumpy", moods = "yes" })
+    eq(BunnyBarDB.personality, "balanced"); eq(BunnyBarDB.moods, true)
+end)
+
+test("personality changes leave styles, colours, preview and portrait ears alone", function()
+    local ns2, c = bootPanel({ schema = 5, variation = "angel", furColor = "87CEEB" },
+        function() mkPlayer(100, 900, 60) end)
+    slash("personality sleepy"); slash("mood off"); slash("personality playful")
+    eq(BunnyBarDB.variation, "angel"); eq(ns2.Config.FurColor(), "87CEEB")
+    truthy(bunnyLayers()._texture:find("angel"))
+    truthy(c.previewLayers[1]._texture:find("angel"))
+    local e = ns2.Ears.GetState().player
+    eq(e.shown, true)
+    eq(e.overlay._children[1]._texture, "Interface\\AddOns\\BunnyBar\\Textures\\bunny-ears.tga")
+    eq(hexOf(e.overlay._children[1]:GetVertexColor()), "87CEEB")
+end)
+
+test("settings panel: personality dropdown and mood checkbox", function()
+    local ns2, c = bootPanel({ schema = 5 })
+    eq(c.personalityMode, "dropdown")
+    local radios = c.personality:MockMenu()
+    local labels = {}
+    for i, r in ipairs(radios) do labels[i] = r.text end
+    eq(table.concat(labels, ","), "Balanced,Lazy,Energetic,Playful,Sleepy")
+    eq(radios[1].isSelected(radios[1].data), true)
+    radios[3].setSelected(radios[3].data)
+    eq(BunnyBarDB.personality, "energetic")
+    radios = c.personality:MockMenu()
+    eq(radios[3].isSelected(radios[3].data), true); eq(radios[1].isSelected(radios[1].data), false)
+    eq(c.moods:GetChecked(), true)
+    c.moods:Click(); eq(BunnyBarDB.moods, false)
+    slash("personality lazy")
+    eq(c.personality:MockMenu()[2].isSelected("lazy"), true, "slash -> panel")
+    -- layout: inside the Behaviors section
+    local L = ns2.Options.layout
+    local _, _, _, px, py = c.personality:GetPoint(1)
+    truthy(py <= L.behaviors.top and py - 22 >= L.behaviors.bottom - 2, "dropdown inside Behaviors")
+    truthy(px + 120 <= 660)
+    local _, _, _, mx, my = c.moods:GetPoint(1)
+    truthy(my - 24 >= L.behaviors.bottom - 2 and mx + 90 <= 660, "mood checkbox inside")
+end)
+
+test("settings panel: dropdown fallback when the modern template is missing", function()
+    mock.MISSING_TEMPLATES.WowStyle1DropdownTemplate = true
+    local ns2, c = bootPanel({ schema = 5 })
+    eq(c.personalityMode, "cycle")
+    eq(c.personality:GetText(), "Balanced")
+    c.personality:Click(); eq(BunnyBarDB.personality, "lazy"); eq(c.personality:GetText(), "Lazy")
+    for _ = 1, 4 do c.personality:Click() end
+    eq(BunnyBarDB.personality, "balanced", "cycles around")
+    mock.MISSING_TEMPLATES = {}
+end)
+
+test("panel isn't refreshed while closed; it catches up when reopened", function()
+    local ns2, c = bootPanel({ schema = 5 })
+    local before = c.personality._generated or 0
+    ns2.Options.panel:Hide()
+    slash("personality sleepy"); slash("color #123456"); slash("size 96")
+    eq(c.personality._generated or 0, before, "no refresh while closed")
+    ns2.Options.panel:Show()
+    truthy((c.personality._generated or 0) > before)
+    eq(c.hex:GetText(), "#123456"); eq(c.sizes[4]:GetChecked(), true)
 end)
 
 ----------------------------------------------------------------------------

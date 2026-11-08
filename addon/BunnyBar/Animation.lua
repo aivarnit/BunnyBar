@@ -189,7 +189,8 @@ local facing = 1        -- 1 = right, -1 = left
 local destX = 0
 local hopFromX, hopToX, hopElapsed, hopDur = 0, 0, 0, 0.4
 local lastWasNap = false
-local lastBehavior
+local lastBehavior, previousBehavior
+local nextDecisionAt      -- when the idle wait ends (for /bunny mood debug)
 local currentBehavior
 local sleepUntil = 0
 local resumeSleepFor        -- seconds of nap left when hidden mid-nap
@@ -367,8 +368,10 @@ function enterIdle()
     setPose("idle")
     if poseTimer then poseTimer:Cancel() end
     poseTimer = C_Timer.NewTimer(Util.RandomRange(1.5, FIDGET_MAX), idleFidget)
-    local interval = db.interval
-    schedule(Util.RandomRange(interval * 0.5, interval * 1.5), decideNext)
+    local interval = db.interval * ns.Personality.Params().wait
+    local wait = Util.RandomRange(interval * 0.5, interval * 1.5)
+    nextDecisionAt = GetTime() + wait
+    schedule(wait, decideNext)
 end
 
 -- `forced` (/bunny test burrow) ignores the on/off setting and the cooldown;
@@ -382,51 +385,70 @@ local function canBurrow(forced)
     return GetTime() - (burrow.lastAt or stats.since or GetTime()) >= cooldown
 end
 
--- Weighted pick among enabled behaviours, never the same one twice in a row.
-function Bunny.PickBehavior(rand, exclude)
+-- Weighted pick among enabled behaviours. Base weights are scaled by the
+-- personality/mood weights (Personality.Params); `exclude` and `exclude2`
+-- (the last one or two behaviours) are never picked.
+function Bunny.PickBehavior(rand, exclude, exclude2)
     rand = rand or random
     if not db.idleExtras then return nil end
+    local mult = ns.Personality.Params().weights
     local total = 0
     for _, name in ipairs(Bunny.BEHAVIOR_ORDER) do
         local b = Bunny.BEHAVIORS[name]
-        if name ~= exclude and (not b.setting or db[b.setting]) then total = total + b.weight end
+        if name ~= exclude and name ~= exclude2 and (not b.setting or db[b.setting]) then
+            total = total + b.weight * (mult[name] or 1)
+        end
     end
     if total <= 0 then return nil end
     local r = rand() * total
     for _, name in ipairs(Bunny.BEHAVIOR_ORDER) do
         local b = Bunny.BEHAVIORS[name]
-        if name ~= exclude and (not b.setting or db[b.setting]) then
-            r = r - b.weight
+        if name ~= exclude and name ~= exclude2 and (not b.setting or db[b.setting]) then
+            r = r - b.weight * (mult[name] or 1)
             if r <= 0 then return name end
         end
     end
     return nil
 end
 
+-- An idle behaviour finished naturally: tell the mood system, then idle.
+local function behaviorDone()
+    local name = currentBehavior
+    if name then ns.Personality.OnEvent(name) end
+    enterIdle()
+end
+
 local function playBehavior(name)
     local b = Bunny.BEHAVIORS[name]
     if poseTimer then poseTimer:Cancel(); poseTimer = nil end
+    previousBehavior = lastBehavior
     currentBehavior, lastBehavior = name, name
     stats.behaviors[name] = (stats.behaviors[name] or 0) + 1
-    playSequence(SEQUENCES[b.sequence], "behavior", enterIdle)
+    playSequence(SEQUENCES[b.sequence], "behavior", behaviorDone)
 end
 
 local startBurrow -- forward
 
+-- The scheduler. Personality and mood only scale these chances, the idle
+-- wait and behaviour weights (Personality.lua); the number and order of
+-- random draws is the same as without them.
 function decideNext()
     actionTimer = nil
-    if not lastWasNap and random() < db.sleepChance then
+    nextDecisionAt = nil
+    local P = ns.Personality.Params()
+    local chance = ns.Personality.Chance
+    if not lastWasNap and random() < chance(db.sleepChance, P.nap) then
         lastWasNap = true
         enterSleep()
         return
     end
     lastWasNap = false
-    if canBurrow(false) and random() < Bunny.BURROW_CHANCE then
+    if canBurrow(false) and random() < chance(Bunny.BURROW_CHANCE, P.burrow) then
         startBurrow()
         return
     end
-    if db.idleExtras and random() < Bunny.BEHAVIOR_CHANCE then
-        local name = Bunny.PickBehavior(random, lastBehavior)
+    if db.idleExtras and random() < chance(Bunny.BEHAVIOR_CHANCE, P.behavior) then
+        local name = Bunny.PickBehavior(random, lastBehavior, P.noRepeat >= 2 and previousBehavior or nil)
         if name then
             playBehavior(name)
             return
@@ -441,7 +463,19 @@ end
 ----------------------------------------------------------------------------
 
 local function sleepDuration()
-    return Util.RandomRange(SLEEP_MIN, SLEEP_MAX)
+    return Util.RandomRange(SLEEP_MIN, SLEEP_MAX) * ns.Personality.Params().sleep
+end
+
+-- Woke up naturally from a nap: mood event, and some personalities like a
+-- stretch right after waking (no extra random draw when the chance is 0).
+local function afterWake()
+    ns.Personality.OnEvent("nap")
+    local stretchChance = ns.Personality.Params().wakeStretch
+    if stretchChance > 0 and db.idleExtras and random() < stretchChance then
+        playBehavior("stretch")
+    else
+        enterIdle()
+    end
 end
 
 -- idle -> getting sleepy -> lying down -> breathing loop -> waking -> idle
@@ -463,7 +497,7 @@ end
 -- breathing. Waking only happens here, so it never starts mid-inhale.
 function breathEnd()
     if GetTime() >= sleepUntil then
-        playSequence(SEQUENCES.wake, "waking", enterIdle)
+        playSequence(SEQUENCES.wake, "waking", afterWake)
     elseif random() < TWITCH_CHANCE then
         setPose(random() < 0.5 and "sleepEar" or "sleepNose")
         schedule(TWITCH_TIME, startBreath)
@@ -587,6 +621,7 @@ function afterLand()
     else
         state = "recover"
         setPose("recover")
+        ns.Personality.OnEvent("hop") -- a whole journey completed
         schedule(HOP.recover / speed(), enterIdle)
     end
 end
@@ -657,6 +692,7 @@ end
 
 function burrowDone()
     burrowCleanup()
+    ns.Personality.OnEvent("burrow")
     enterIdle()
 end
 
@@ -961,6 +997,12 @@ function Bunny:GetDebugState()
         burrowFrom = burrow.fromX, burrowTo = burrow.toX,
         holeA = holes and holes.A.frame or nil, holeB = holes and holes.B.frame or nil,
     }
+end
+
+-- Seconds until the next scheduling decision, or nil when not idle-waiting.
+function Bunny:GetNextDecisionIn()
+    if state ~= "idle" or not nextDecisionAt then return nil end
+    return math.max(0, nextDecisionAt - GetTime())
 end
 
 function Bunny:GetHoles()

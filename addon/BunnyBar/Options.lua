@@ -430,6 +430,45 @@ local function enumRow(x, y, label, key, items)
     return buttons, y - ROW
 end
 
+-- Personality selector: the modern dropdown (DropdownButton +
+-- WowStyle1DropdownTemplate + SetupMenu radios) when available, otherwise a
+-- button that cycles through the personalities.
+local function isPersonality(id) return ns.Personality.Current() == id end
+local function setPersonality(id)
+    ns.Config.Set("personality", id)
+    Options.Refresh()
+end
+local function personalityMenu(_, root)
+    for _, id in ipairs(ns.Personality.ORDER) do
+        root:CreateRadio(ns.Personality.LABELS[id], isPersonality, setPersonality, id)
+    end
+end
+local function cyclePersonality()
+    local order, cur = ns.Personality.ORDER, ns.Personality.Current()
+    for i, id in ipairs(order) do
+        if id == cur then setPersonality(order[i % #order + 1]); return end
+    end
+end
+
+local function personalityRow(x, y)
+    text(panel, "GameFontHighlightSmall", "Personality", "TOPLEFT", panel, "TOPLEFT", x, y - 5)
+    local ok, dd = pcall(CreateFrame, "DropdownButton", nil, panel, "WowStyle1DropdownTemplate")
+    if ok and dd and type(dd.SetupMenu) == "function" then
+        dd:SetPoint("TOPLEFT", panel, "TOPLEFT", x + 66, y)
+        dd:SetWidth(120)
+        dd:SetupMenu(personalityMenu)
+        c.personality, c.personalityMode = dd, "dropdown"
+    else
+        local b = make("Button", panel, "UIPanelButtonTemplate")
+        b:SetSize(120, 22)
+        b:SetPoint("TOPLEFT", panel, "TOPLEFT", x + 66, y)
+        b:SetScript("OnClick", cyclePersonality)
+        c.personality, c.personalityMode = b, "cycle"
+    end
+    c.moods = checkbox(x + 196, y + 1, "Moods", "moods", settingClick)
+    return y - CHECK_ROW
+end
+
 local function buildBehaviors(x, y)
     header("Bunny Behaviors", x, y)
     c.behaviors = {}
@@ -447,7 +486,7 @@ local function buildBehaviors(x, y)
     c.burrowFrequency, bottom = enumRow(x, cy - 2, "Burrowing", "burrowFrequency", {
         { label = "Rare", value = "rare" }, { label = "Normal", value = "normal" }, { label = "Often", value = "often" },
     })
-    return bottom
+    return personalityRow(x, bottom - 4)
 end
 
 local function buildInteractions(x, y)
@@ -522,7 +561,8 @@ function Options.UpdatePreview()
 end
 
 function Options.Refresh()
-    if not built or not ns.db then return end
+    -- Nothing to do while the panel is closed: it refreshes when shown.
+    if not built or not ns.db or not panel:IsVisible() then return end
     local db = ns.db
     local fur = ns.Config.FurColor()
     syncing = true
@@ -567,6 +607,12 @@ function Options.Refresh()
     for key, cb in pairs(c.behaviors) do cb:SetChecked(db[key]) end
     for _, rb in ipairs(c.burrowFrequency) do rb:SetChecked(rb.value == db.burrowFrequency) end
     c.hearts:SetChecked(db.hearts)
+    c.moods:SetChecked(db.moods)
+    if c.personalityMode == "dropdown" then
+        pcall(c.personality.GenerateMenu, c.personality) -- updates the shown selection
+    else
+        c.personality:SetText(ns.Personality.LABELS[ns.Personality.Current()])
+    end
     for _, rb in ipairs(c.heartIntensity) do rb:SetChecked(rb.value == db.heartIntensity) end
     syncing = false
 end

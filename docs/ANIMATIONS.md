@@ -24,6 +24,31 @@ Picking a style switches to that style's default fur colour, unless you've chose
 
 Changing style never restarts what the bunny is doing: a sleeping bunny keeps sleeping in its new look.
 
+## Personalities and moods (v0.4)
+
+Personalities and moods change **which** of these animations the bunny picks, and how long it waits between them. They never change animation speed, timing or sprites.
+
+**Personality** (setting; `/bunny personality …`): a small table of multipliers on the scheduler's existing knobs. Hopping is whatever is left after naps, burrows and idle behaviours, so a personality with fewer naps and shorter waits hops more.
+
+| | Nap chance | Burrow chance | Idle-behaviour chance | Idle wait | Nap length | Favourite behaviours | Mood counters grow | Other |
+|---|---|---|---|---|---|---|---|---|
+| **Balanced** (default) | ×1 | ×1 | ×1 | ×1 | ×1 | none | normal | exactly the v0.3 mix |
+| **Lazy** | ×2.2 | ×0.5 | ×1.3 | ×1.6 | ×1.5 | stretch ×1.5, wash ×1.2, look ×0.8 | tired ×1.5, energy ×0.6 | 30 % stretch after waking |
+| **Energetic** | ×0.4 | ×1.2 | ×1.1 | ×0.6 | ×0.7 | look ×1.5, scratch ×1.3, stretch ×0.7 | tired ×0.7, hungry ×1.3, energy ×1.5 | |
+| **Playful** | ×0.8 | ×2.0 | ×1.4 | ×0.9 | ×0.9 | carrot ×2, look ×1.5 | hungry ×1.2, energy ×1.8 | avoids its last *two* behaviours |
+| **Sleepy** | ×2.5 | ×0.6 | ×0.9 | ×1.3 | ×1.6 | stretch ×1.4 | tired ×2, hungry ×0.8, energy ×0.5 | 60 % stretch after waking |
+
+**Mood** (automatic; `/bunny mood`): changes only when an activity *finishes*, never on a timer or per frame. Three counters (tired, hungry, energy) move by fixed amounts per event, scaled by the personality's rates:
+
+| Mood | Becomes active when | Effect on the next decisions | Ends when |
+|---|---|---|---|
+| **Happy** | default; no need is pressing | neutral (×1 everywhere) | a counter reaches its threshold |
+| **Sleepy** | `tired` ≥ 6 (hops +1, burrows +1.5) | nap ×2, behaviour ×0.8, burrow ×0.6, wait ×1.2, stretch ×1.5 | a nap clears `tired` |
+| **Hungry** | `hungry` ≥ 6 (hops +0.7, burrows +1, behaviours +0.5, naps +0.5) | idle behaviour ×1.6, carrot weight ×4 | a carrot clears `hungry` |
+| **Playful** | `energy` ≥ 5 (naps +3, behaviours +1…1.5) | burrow ×1.8, nap ×0.6, wait ×0.8, look ×1.5, scratch ×1.2 | hops (−1) and burrows (−3) spend `energy` |
+
+The highest counter that's over its threshold picks the mood. A mood lasts at least 3 events unless its need is met (a nap ends Sleepy, a carrot ends Hungry), which stops it flickering back and forth. Moods aren't saved: every session starts Happy. With the mood system off, only the personality applies.
+
 ## Hopping (8 poses)
 
 ![Hopping right and left](images/hop-preview.gif)

@@ -44,6 +44,7 @@ addon/BunnyBar/
 ├── SpriteData.lua   GENERATED per-frame sprite bounds (hover hit-testing)
 ├── Placement.lua    automatic placement above the highest visible bottom bar
 ├── Animation.lua    the bunny frame, poses, behaviour state machine, burrow, hit test
+├── Personality.lua  personalities + event-driven moods (data-driven weights)
 ├── Hearts.lua       hover hearts: throttled cursor check + pooled particles
 ├── Ears.lua         bunny ears over the player / party portraits
 ├── Options.lua      Settings panel (colour picker, size presets, accessories)
@@ -251,6 +252,25 @@ On `Stop()` the bunny is always left in a valid resting state: on the ground, no
 
 **Pausing:** `OnHide` calls `Stop()`, which cancels both timers, removes the `OnUpdate` script, finishes any hop in progress and puts the bunny on the ground. `OnShow` calls `Start()`. This covers `/bunny hide`, Alt+Z, cinematics, and anything else that hides `UIParent`.
 
+### Personalities and moods (v0.4)
+
+`Personality.lua` is a data table plus about 150 lines of logic. It doesn't schedule anything itself. `decideNext()` calls `Personality.Params()` (one reused table, no per-call allocation) for multipliers on the existing knobs: nap chance, burrow chance, idle-behaviour chance, idle wait, nap length, behaviour weights, "avoid the last N behaviours", and the stretch-after-waking chance.
+
+`Personality.Chance(base, mult)` returns `base` unchanged for ×1 and caps everything else at 90 %. The **number and order of random draws are unchanged**: the wake stretch only draws when its chance is above 0. So Balanced with the Happy mood is exactly the v0.3 scheduler.
+
+**Moods** change only in `Personality.OnEvent(event)`, called when an activity completes naturally:
+
+- a hop journey (on its recovery pose);
+- a nap (`afterWake`);
+- an idle behaviour (`behaviorDone`);
+- a burrow (`burrowDone`).
+
+Interrupted activities don't count. Each event moves three counters (tired, hungry, energy) by fixed amounts; increases are scaled by the personality. The highest counter at or over its threshold names the mood, otherwise it's Happy. **Hysteresis:** a mood lasts at least `MIN_DWELL` (3) events unless its own need drops below half its threshold (a nap, a carrot), and Happy needs at least one event before changing.
+
+Transitions involve no randomness, so they're deterministic, and the scheduler's draws come from `math.random`, which seeded tests control. The mood state isn't saved.
+
+**Settings:** `personality` (enum, default `balanced`) and `moods` (default on); schema 5. The migration only adds these two keys, so appearance, colours, ears and position are untouched. The panel adds a **Personality** dropdown in Bunny Behaviors, using `DropdownButton` + `WowStyle1DropdownTemplate` + `SetupMenu` radios, or a cycle button if those are missing, and a **Moods** checkbox. `Options.Refresh` now does nothing while the panel is closed and catches up when it's shown.
+
 ### Burrowing
 
 `startBurrow` → sniff → dig (hole A: mound → bigger mound → open hole) → sink (4 pre-clipped frames) → `burrowUnder`. At that point the sprite layers are hidden and the bunny moves to the destination while invisible. Then `burrowOpen` (hole B appears) → emerge (ears, head, pop) → shake (both holes close) → `burrowDone`.
@@ -358,6 +378,7 @@ A dragged position is stored as `BOTTOM` → `UIParent BOTTOM` with an x offset 
 - legacy party portraits;
 - identical results after a reload. **Placement:** Action Bar 2 on/off × XP bar on/off, reputation bar only, empty XP container, legacy XP/rep frames, all bars hidden or missing (fallback), invalid geometry (secret, erroring, nil, NaN, zero-size, too tall), custom Edit Mode positions (moved main bar, side bars off the track, bars at the top), centring without a main bar, UI scale conversion, live toggling with coalesced deferred refresh, level-cap XP bar hiding, every refresh event, no re-anchoring when nothing changed, manual override and `/bunny reset`, saved position on reload, Alt+Z, the `/bunny bars` report, hooks installed once without replacing scripts. **Live repositioning:** Action Bar 2 on/off/on with bounded settling, XP container hidden/shown, reputation replacing XP (same and separate containers), Edit Mode closing and Settings closing as triggers, a 50-change burst collapsing into one pass, continuous changes refreshing at least every `MAX_WAIT`, geometry that becomes valid or shifts after a delay (picked up by settle passes), bounded settling with permanently invalid geometry, no recursion from our own `SetPoint`, manual positions ignoring every trigger, missing frames / missing `HookScript` / failing `HookScript`, and the diagnostics in `/bunny bars`. **Naps:** sequence frame counts and timing windows, full-nap frame order and per-frame durations, no movement or `OnUpdate` during a nap, twitches only between breaths, waking only from the resting frame, `/bunny test` in every nap phase, hiding in every phase (no timers left, valid pose, nap resumes with its remaining time), settings changes mid-nap, no back-to-back naps |
 | v0.3 (Lua) | `run_tests.lua` | **Hop:** 8 phases in order and at their timings, speed scaling, air-pose thresholds, no vertical offset on the ground, frame-rate independence (30 vs 144 fps). **Behaviours:** carrot sequence with three shrinking bites at its real timing, wash/scratch/stretch/look sequences with distinct frames and no movement, look-around keeps facing, weighted pick that respects settings and never repeats, a 30-minute mixed simulation (bounds, no stray holes, sprite visible, rare `OnUpdate`, no timer pile-up). **Burrow:** both directions (opposite side, in bounds, facing, sequence, hole frames, cleanup, final position), hole alignment and layers, interruption in 6 phases × 5 ways, rarity per frequency, off switch, too-short track. **Styles:** per-style folders and SpriteData, default-fur follow vs custom kept, colour on every style and sheet, no reset when switching mid-nap or mid-behaviour, schema 2→3 migration. **Hearts:** tight hit box, mirrored, nothing underground, no hearts over empty track, hearts while asleep without waking, during hops, behaviours and digging, click-through and containment, throttled polling (4/20 per second, none when off or hidden), particle limits / animation / cleanup, `/bunny test hearts`, command validation, missing APIs, combat, panel ↔ settings ↔ reload. |
+| v0.4 (Lua) | `run_tests.lua` | Personality selection, validation and persistence. Balanced without moods equals v0.3 (all multipliers 1, chances unchanged). 60-minute seeded simulations per personality: hops Energetic > Balanced > Lazy; naps Sleepy > Balanced > Energetic; time asleep Sleepy > Lazy > 1.25 × Balanced; burrows and carrots Playful > Balanced. Wake stretch for Sleepy and none for Balanced. Personalities don't change speed or sprites. Deterministic mood transitions (same events give the same moods under any seed), nap and carrot satisfying needs, bounded oscillation, personality rates, mood-shifted weights and chances (capped), no immediate repeats and none within two for Playful, mood system off, `/bunny mood debug` printing only when asked, events only for completed activities, no extra timers or idle `OnUpdate`, schema 4 → 5 migration, appearance, colour, preview and ears untouched, dropdown, fallback cycle button, no refresh while the panel is closed. |
 | v0.3 (art) | `test_static.py` | Every style has every frame. Style features are present and absent from classic. Details stay untinted on every style. The zombie ear droops. Classic art is unchanged by the style hooks. Burrow frames sink and emerge progressively with nothing below the ground. SpriteData matches the frames. Lua ↔ generator parity for poses, sequences, hop timing, air poses, burrow effects and heart parameters. All v0.3 previews decode. |
 | Recolouring | `tests/test_static.py` | Layers are disjoint and complete. The default colour reproduces the original art. Only two normalised fur tones are used across every frame. Pink, sky blue and black change the fur only, and the main fur takes the exact colour. The portrait ears sprite is rooted, symmetric and has pink inner ears. |
 | Art | `tests/test_static.py` | One shared ground row, breathing moves the torso exactly 1 px and leaves the head still, twitches are subtle, consecutive frames overlap (silhouette IoU ≥ 0.7), z glyphs never touch the bunny, generator timings match the Lua sequences, the animated GIF decodes |
@@ -407,3 +428,11 @@ Run these in WoW Forever and note the client build (shown on the login screen):
 25. **v0.3 hearts:** hover the bunny while idle, hopping, eating, digging, asleep and waking. The bunny must not wake. Hovering empty parts of the track should do nothing. Check Subtle, Normal and Extra. **Click action buttons under and around the bunny while hovering**: they must still work. Hearts should disappear when the bunny is hidden.
 26. **v0.3 performance:** `/bunny stats` shows hover checks and hearts. Compare FPS with hearts on and off on an M1 MacBook Air.
 27. **v0.3 settings:** Esc → Options → AddOns → BunnyBar shows Bunny Style, Size, Behaviors and Interactions with nothing overlapping, at your normal UI scale and at a smaller one. Settings should survive `/reload`.
+28. **v0.4 personalities:** Esc → Options → AddOns → BunnyBar → Bunny Behaviors shows a **Personality** dropdown and a **Moods** checkbox, with nothing overlapping. Pick each personality and watch for about 10 minutes:
+    - Lazy and Sleepy nap more and wait longer, and often stretch after waking;
+    - Energetic hops much more and rarely naps;
+    - Playful burrows and eats carrots more.
+
+    `/bunny personality grumpy` should give a clear error. The choice should survive `/reload`.
+29. **v0.4 moods:** `/bunny mood debug` after a long hopping spell should show tired rising and, eventually, Sleepy. After a nap it should no longer be Sleepy. When Hungry, carrots should become frequent until one is eaten. `/bunny mood off` stops mood changes. There should be no chat spam from moods.
+30. **v0.4 regression:** styles, custom and default colours, the preview, portrait ears (after `/reload` with a non-Classic style), hearts, burrowing and positioning are unchanged after switching personality and moods.

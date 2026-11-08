@@ -267,6 +267,23 @@ function Region:MockType(t)
     if fn then fn(self) end
 end
 
+-- Modern dropdown (DropdownButton + Menu API): SetupMenu stores the menu
+-- generator; MockMenu() runs it and returns the radios it created.
+function Region:SetupMenu(gen) self._menuGen = gen end
+function Region:GenerateMenu() self._generated = (self._generated or 0) + 1 end
+function Region:MockMenu()
+    local radios = {}
+    local root = {}
+    function root:CreateRadio(text, isSelected, setSelected, data)
+        local r = { text = text, isSelected = isSelected, setSelected = setSelected, data = data }
+        radios[#radios + 1] = r
+        return r
+    end
+    function root:CreateTitle() end
+    self._menuGen(self, root)
+    return radios
+end
+
 -- Check / radio buttons and buttons
 function Region:SetChecked(v) self._checked = v and true or false end
 function Region:GetChecked() return self._checked or false end

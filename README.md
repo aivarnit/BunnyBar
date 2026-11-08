@@ -6,7 +6,9 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 
 **Current version: 0.2.0** · [Download](https://github.com/aivarnit/BunnyBar/releases/latest) · [Release notes](docs/releases/v0.2.0.md)
 
-> **Coming in v0.3 (on `main`, not released yet):** a smoother 8-pose hop, idle behaviours (carrot eating, face washing, ear scratching, stretching, looking around), rare burrowing across the track, five bunny styles (Classic, Devil, Angel, Dragon, Zombie) and hover hearts. See [docs/ANIMATIONS.md](docs/ANIMATIONS.md). These features still need in-game testing on WoW Forever before release.
+> **Coming next (on `main`, not released yet):** v0.4 personalities and moods. See [docs/ANIMATIONS.md](docs/ANIMATIONS.md#personalities-and-moods-v04).
+>
+> **Also on `main`:** a smoother 8-pose hop, idle behaviours (carrot eating, face washing, ear scratching, stretching, looking around), rare burrowing across the track, five bunny styles (Classic, Devil, Angel, Dragon, Zombie) and hover hearts. See [docs/ANIMATIONS.md](docs/ANIMATIONS.md). These features still need in-game testing on WoW Forever before release.
 
 ![The five bunny styles](docs/images/styles.png)
 
@@ -25,6 +27,8 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 - **Naps**: now and then it gets drowsy, yawns, curls up and sleeps, breathing slowly with a rising "z" and the odd ear or nose twitch. Then it wakes, stretches and sits up, with every step drawn as its own frame.
 - **Idle behaviours** *(v0.3)*: finds and eats a carrot in three little bites, washes its face, scratches behind an ear, stretches and looks around.
 - **Burrowing** *(v0.3)*: once in a while it digs a hole, disappears into it and pops out of a second hole on the other side of its track.
+- **Personalities** *(v0.4)*: Balanced, Lazy, Energetic, Playful or Sleepy. Each changes how often the bunny naps, hops, burrows and plays.
+- **Moods** *(v0.4)*: the bunny gets sleepy after lots of hopping, hungry until it finds a carrot, and playful after a good rest. Its mood nudges what it does next.
 - **Automatic placement**: it sits just above the highest visible bar at the bottom of the screen, whether that's Action Bar 2/3, the XP or reputation bar, or the main action bar.
 - **Live repositioning**: it moves by itself, within a fraction of a second, when you toggle action bars, gain or lose the XP bar, change UI scale or edit your layout. No `/reload` needed.
 - **Manual positioning**: `/bunny unlock`, drag it anywhere, `/bunny lock`. A dragged position always wins over automatic placement until `/bunny reset`.
@@ -81,6 +85,8 @@ Step-by-step instructions, including how to create a missing `AddOns` folder and
 | `/bunny hearts normal` | Hover hearts: `on`, `off`, `subtle`, `normal`, `extra` *(v0.3)* |
 | `/bunny burrow rare` | Burrowing: `on`, `off`, `rare`, `normal`, `often` *(v0.3)* |
 | `/bunny idle off`, `/bunny carrot off` | Idle behaviours / carrot eating on or off *(v0.3)* |
+| `/bunny personality lazy` | Personality: `balanced`, `lazy`, `energetic`, `playful`, `sleepy` *(v0.4)* |
+| `/bunny mood` | Current mood and personality; `on`/`off`, `debug` *(v0.4)* |
 | `/bunny show` | Show the bunny |
 | `/bunny hide` | Hide the bunny (all animation stops) |
 | `/bunny lock` | Lock the position (click-through) |
