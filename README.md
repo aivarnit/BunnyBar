@@ -16,7 +16,8 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 - **Natural movement**: it waits 4–12 seconds, picks a random spot on its track and gets there in a series of small parabolic hops (crouch, jump, land). It faces the way it's going and never teleports.
 - **Idle life**: blinking, ear twitches and breathing.
 - **Naps**: now and then the bunny gets drowsy, yawns, curls up and sleeps, breathing slowly with a rising "z" and the odd ear or nose twitch. Then it wakes, stretches and sits up. Every step is a separate frame, so nothing snaps from pose to pose.
-- **Unobtrusive**: an independent, click-through decorative frame drawn *below* the action-button layer. It never modifies, hooks or overlaps protected frames.
+- **Unobtrusive**: an independent, click-through decorative frame drawn *below* the action-button layer. It never modifies or anchors to Blizzard's bars and never touches action buttons.
+- **Finds its spot by itself**: it sits just above the highest visible bar at the bottom of the screen, whether that's Action Bar 2/3, the XP or reputation bar, or the main action bar. It moves on its own when you toggle bars, gain or lose the XP bar, change UI scale or edit your layout.
 - **Configurable**: size, speed, hop interval, track width and hop height. You can drag it anywhere, and settings are saved per account.
 - **Lightweight**: no per-frame work while sitting still. Updates run only during the ~0.4 s of each hop. No libraries, no network, about 110 KB of textures.
 
@@ -52,6 +53,7 @@ Step-by-step instructions, including how to create a missing `AddOns` folder and
 | `/bunny height 16` | Hop height, 0–64 (default 16) |
 | `/bunny test` | Hop right now (a napping bunny wakes up first) |
 | `/bunny stats` | Status, hop counters and performance info |
+| `/bunny bars` | Show which bottom bars were detected and which one the bunny sits on |
 
 `/bunnybar` works as an alias. A numeric command with no value, such as `/bunny size`, prints the current value. Full reference: [docs/COMMANDS.md](docs/COMMANDS.md).
 
@@ -115,8 +117,9 @@ The code layout and state machine are described in [docs/ARCHITECTURE.md](docs/A
 ## Known limitations
 
 - **Not yet tested in game.** Everything is checked offline against a mock of the WoW API. See the manual checklist in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#manual-in-game-test-checklist).
-- **Automatic placement is a heuristic.** BunnyBar looks for `MainActionBar`, `MainMenuBar` and the bottom multi-bars and sits on top of the highest visible one. If the frames have other names on Forever, or your bars are somewhere unusual, it falls back to 100 units above the bottom of the screen. Use `/bunny unlock` to drag it into place.
-- It re-checks placement after Edit Mode layout changes, but not continuously. Toggling a bar's visibility outside Edit Mode won't move the bunny until `/bunny reset` or a reload.
+- **Automatic placement relies on Blizzard frame names that haven't been confirmed on Forever.** It knows the modern and legacy names for the bottom action bars and the XP/reputation bars. If Forever uses different names, those bars are ignored, and if none are found the bunny falls back to 100 units above the bottom of the screen. `/bunny bars` shows what was detected. You can always drag it with `/bunny unlock`.
+- Placement reacts to bars being shown or hidden and to layout events. A bar that changes *size* without either (rare) is picked up on the next layout event or `/reload`.
+- Bars that are off to the side, outside the bunny's track, are deliberately ignored.
 - The bunny sits on the frame layer *below* action buttons, so if you overlap it with a bar, the buttons win.
 - Settings are account-wide. There are no per-character profiles.
 

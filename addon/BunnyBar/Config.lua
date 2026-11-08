@@ -117,6 +117,7 @@ local HELP = {
     "|cffffd200/bunny height <0-64>|r - hop height (default 16)",
     "|cffffd200/bunny test|r - trigger a test hop",
     "|cffffd200/bunny stats|r - performance and status info",
+    "|cffffd200/bunny bars|r - show which bottom bars the bunny detected",
 }
 
 -- Numeric commands: command word -> settings key.
@@ -181,6 +182,10 @@ Config.Handlers = {
         for i = 1, #lines do ns.Print(lines[i]) end
     end,
 }
+Config.Handlers.bars = function()
+    local lines = ns.Placement.Describe(ns.db.trackWidth)
+    for i = 1, #lines do ns.Print(lines[i]) end
+end
 Config.Handlers.help = Config.Handlers[""]
 Config.Handlers.status = Config.Handlers.stats
 

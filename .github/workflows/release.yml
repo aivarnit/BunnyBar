@@ -46,7 +46,7 @@ jobs:
           zip=$(ls dist/BunnyBar-*.zip)
           unzip -l "$zip"
           test "$(unzip -Z1 "$zip" | cut -d/ -f1 | sort -u)" = "BunnyBar"
-          for f in BunnyBar.toc Util.lua Config.lua Animation.lua Core.lua \
+          for f in BunnyBar.toc Util.lua Config.lua Placement.lua Animation.lua Core.lua \
                    Textures/bunny-idle.tga Textures/bunny-hop.tga \
                    Textures/bunny-land.tga Textures/bunny-sleep.tga \
                    Textures/bunny-sleepy.tga Textures/bunny-wake.tga; do

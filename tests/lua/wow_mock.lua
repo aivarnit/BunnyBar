@@ -18,6 +18,8 @@ M.chat = {}
 M.KNOWN_EVENTS = {
     ADDON_LOADED = true, PLAYER_LOGIN = true, PLAYER_ENTERING_WORLD = true,
     EDIT_MODE_LAYOUTS_UPDATED = true, UI_SCALE_CHANGED = true, DISPLAY_SIZE_CHANGED = true,
+    PLAYER_LEVEL_UP = true, ENABLE_XP_GAIN = true, DISABLE_XP_GAIN = true,
+    UPDATE_EXPANSION_LEVEL = true,
 }
 
 ----------------------------------------------------------------------------
@@ -31,7 +33,7 @@ local function newRegion(kind, parent)
     local r = setmetatable({
         _kind = kind, _parent = parent, _shown = true, _points = {},
         _width = 0, _height = 0, _scripts = {}, _events = {}, _children = {},
-        _mouse = false, _scale = 1,
+        _mouse = false, _scale = 1, _hooks = {},
     }, Region)
     if parent then table.insert(parent._children, r) end
     return r
@@ -48,6 +50,8 @@ local function fireVisibility(region, visibleBefore, script)
     -- Fire OnShow/OnHide on this region and visible descendants.
     local fn = region._scripts[script]
     if fn then fn(region) end
+    local hooks = region._hooks[script]
+    if hooks then for _, h in ipairs(hooks) do h(region) end end
     for _, child in ipairs(region._children) do
         if child._shown then fireVisibility(child, visibleBefore, script) end
     end
@@ -86,8 +90,18 @@ function Region:GetNumPoints() return #self._points end
 function Region:GetEffectiveScale() return self._scale end
 
 -- Geometry: enough for frames anchored BOTTOM->BOTTOM of UIParent, plus an
--- override used to simulate dragging.
+-- override used to simulate dragging, plus explicit `_geom` rectangles
+-- ({ left, bottom, width, height } in the frame's own scale) for bars.
+function Region:SetMockRect(left, bottom, width, height)
+    self._geom = { left, bottom, width, height }
+end
+function Region:GetRight()
+    if self._geom then return self._geom[1] + self._geom[3] end
+    local l = self:GetLeft()
+    return l and (l + self._width) or nil
+end
 function Region:GetLeft()
+    if self._geom then return self._geom[1] end
     if self._dragLeft then return self._dragLeft end
     local p = self._points[1]
     if not p then return nil end
@@ -95,11 +109,13 @@ function Region:GetLeft()
     return parentW / 2 + p[4] - self._width / 2
 end
 function Region:GetBottom()
+    if self._geom then return self._geom[2] end
     if self._dragBottom then return self._dragBottom end
     local p = self._points[1]
     return p and p[5] or nil
 end
 function Region:GetTop()
+    if self._geom then return self._geom[2] + self._geom[4] end
     local b = self:GetBottom()
     return b and (b + self._height) or nil
 end
@@ -125,6 +141,10 @@ function Region:GetText() return self._text end
 
 -- Frames
 function Region:SetScript(name, fn) self._scripts[name] = fn end
+function Region:HookScript(name, fn)
+    self._hooks[name] = self._hooks[name] or {}
+    table.insert(self._hooks[name], fn)
+end
 function Region:GetScript(name) return self._scripts[name] end
 function Region:RegisterEvent(event)
     if not M.KNOWN_EVENTS[event] then

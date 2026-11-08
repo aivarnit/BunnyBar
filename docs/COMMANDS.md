@@ -13,6 +13,7 @@ All commands start with `/bunny`, or the alias `/bunnybar`. Command words aren't
 | `/bunny unlock` | Show a translucent blue track that you can drag with the left mouse button. |
 | `/bunny reset` | Restore **all** settings to their defaults, return to automatic placement above the action bar, and re-centre the bunny. |
 | `/bunny test` | Hop now. A napping bunny gets up first: from deep sleep it plays the wake-up (about 0.9 s), and if it's still lying down it rises back up. Does nothing if it's already hopping. |
+| `/bunny bars` | Print where automatic placement put the bunny, and the status of every bar it checks: `visible` (with its top edge), `hidden`, `empty` (an XP/rep container with no bar showing), `off track`, `not at bottom`, `no geometry` and so on. Also lists frame names that don't exist on your client. |
 | `/bunny stats` (alias `status`) | Print state, hop/nap counters, the share of time per-frame updates were active, memory use, and per-addon CPU time (if the client exposes it). |
 
 ## Numeric settings
@@ -40,6 +41,7 @@ Values must be plain decimal numbers. Hex (`0x20`), exponents (`1e2`), `nan` and
 
 ## Positioning tips
 
-- **Automatic placement**, the default, puts the track's bottom edge 2 units above the highest visible bottom action bar and centres it on the main bar. It updates when you save an Edit Mode layout or change the UI scale.
+- **Automatic placement**, the default, puts the track's bottom edge 2 units above the highest visible bar under the track: Action Bars 2/3 (or 6–8 if you put them at the bottom), the XP or reputation bar, or the main action bar. The track is centred on the main action bar.
+- It updates automatically, within about a quarter of a second, when a bar is shown or hidden (for example when you toggle Action Bar 2, or the XP bar disappears at the level cap), when an Edit Mode layout changes, when the UI scale or window size changes, and on login or reload.
 - Once you drag the track, its position is stored relative to the bottom centre of the screen, so it stays sensible across resolution and UI-scale changes. Automatic placement is off from then on, until you run `/bunny reset`.
 - The frame is clamped to the screen, so you can't lose it off the edge.

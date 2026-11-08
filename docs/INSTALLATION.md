@@ -13,6 +13,7 @@ BunnyBar/
 ├── BunnyBar.toc
 ├── Util.lua
 ├── Config.lua
+├── Placement.lua
 ├── Animation.lua
 ├── Core.lua
 ├── LICENSE.txt

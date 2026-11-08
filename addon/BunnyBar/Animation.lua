@@ -359,62 +359,35 @@ end
 -- Positioning
 ----------------------------------------------------------------------------
 
--- Frames checked when looking for the default action bar, primary first.
--- Only geometry is *read*; nothing is hooked or modified, so this is safe in
--- and out of combat. Names differ between client generations, hence the list.
-Bunny.BAR_NAMES = { "MainActionBar", "MainMenuBar", "MultiBarBottomLeft", "MultiBarBottomRight" }
-Bunny.FALLBACK_Y = 100 -- UI units above the bottom of the screen
-local GAP = 2
+-- Automatic placement lives in Placement.lua; kept here for compatibility.
+function Bunny.DetectDefaultOffset()
+    return ns.Placement.Detect(ns.db.trackWidth)
+end
+
+local lastAutoX, lastAutoY
 
 local function usable(v)
-    -- Midnight-era clients can return "secret" values that cannot be compared
-    -- or used in arithmetic by addons. Treat them as unavailable.
     if issecretvalue and issecretvalue(v) then return false end
     return type(v) == "number" and v == v
 end
 
-local function readBar(bar)
-    return bar:IsVisible(), bar:GetTop(), (bar:GetCenter()), bar:GetEffectiveScale()
-end
-
--- Returns x offset (from screen centre), y offset (from screen bottom) and
--- whether an action bar was actually found.
-function Bunny.DetectDefaultOffset()
-    local parent = UIParent
-    local parentScale = parent:GetEffectiveScale()
-    local screenHeight = parent:GetHeight()
-    local bestTop, centerX
-    local names = Bunny.BAR_NAMES
-    for i = 1, #names do
-        local bar = _G[names[i]]
-        if type(bar) == "table" and bar.GetTop then
-            local ok, visible, top, cx, scale = pcall(readBar, bar)
-            if ok and not (issecretvalue and issecretvalue(visible)) and visible == true
-                and usable(top) and usable(cx) and usable(scale) and scale > 0 then
-                top = top * scale / parentScale
-                cx = cx * scale / parentScale
-                -- Ignore bars that Edit Mode moved to the upper part of the screen.
-                if top > 0 and top < screenHeight * 0.45 then
-                    if not bestTop or top > bestTop then bestTop = top end
-                    if not centerX then centerX = cx end
-                end
-            end
-        end
-    end
-    if not bestTop then return 0, Bunny.FALLBACK_Y, false end
-    return Util.Round(centerX - parent:GetWidth() / 2), Util.Round(bestTop + GAP), true
-end
-
+-- Position the track: the saved (dragged) position wins; otherwise sit just
+-- above the highest visible bottom bar. Unchanged auto positions are not
+-- re-applied, so frequent refresh requests cost almost nothing.
 function Bunny:ApplyPosition()
     if not frame then return end
     db = ns.db
-    frame:ClearAllPoints()
     if db.point then
+        lastAutoX, lastAutoY = nil, nil
+        frame:ClearAllPoints()
         frame:SetPoint(db.point, UIParent, db.relativePoint, db.x, db.y)
-    else
-        local ox, oy = Bunny.DetectDefaultOffset()
-        frame:SetPoint("BOTTOM", UIParent, "BOTTOM", ox, oy)
+        return
     end
+    local ox, oy = ns.Placement.Detect(db.trackWidth)
+    if ox == lastAutoX and oy == lastAutoY and frame:GetNumPoints() > 0 then return end
+    lastAutoX, lastAutoY = ox, oy
+    frame:ClearAllPoints()
+    frame:SetPoint("BOTTOM", UIParent, "BOTTOM", ox, oy)
 end
 
 function Bunny:IsAutoPositioned()
@@ -429,6 +402,7 @@ local function savePosition()
     db.point, db.relativePoint = "BOTTOM", "BOTTOM"
     db.x = Util.Round(left + width / 2 - UIParent:GetWidth() / 2)
     db.y = Util.Round(bottom)
+    lastAutoX, lastAutoY = nil, nil
     frame:ClearAllPoints()
     frame:SetPoint(db.point, UIParent, db.relativePoint, db.x, db.y)
 end
@@ -447,7 +421,11 @@ local function onDragStop(self)
     savePosition()
 end
 
-local function onShow() Bunny:Start() end
+local function onShow()
+    -- Bars may have changed while we were hidden (e.g. Alt+Z, level-up).
+    if Bunny:IsAutoPositioned() then Bunny:ApplyPosition() end
+    Bunny:Start()
+end
 local function onHide() Bunny:Stop() end
 
 function Bunny:Create()
@@ -497,6 +475,7 @@ function Bunny:ApplySettings(recenter)
     destX = x
     place()
     setPose(resumeSleepFor and "sleep1" or "idle")
+    if self:IsAutoPositioned() then self:ApplyPosition() end
     if wasRunning or frame:IsVisible() then self:Start() end
 end
 

@@ -68,7 +68,9 @@ local function boot(saved, opts)
     opts = opts or {}
     setmetatable(_G, nil)
     for _, name in ipairs({ "BunnyBarDB", "BunnyBarFrame", "MainActionBar", "MainMenuBar",
-        "MultiBarBottomLeft", "MultiBarBottomRight", "issecretvalue", "SLASH_BUNNYBAR1",
+        "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBar5", "MultiBar6", "MultiBar7",
+        "OverrideActionBar", "MainStatusTrackingBarContainer", "SecondaryStatusTrackingBarContainer",
+        "StatusTrackingBarManager", "MainMenuExpBar", "ReputationWatchBar", "issecretvalue", "SLASH_BUNNYBAR1",
         "SLASH_BUNNYBAR2", "C_AddOns", "C_AddOnProfiler", "Enum", "UpdateAddOnMemoryUsage",
         "GetAddOnMemoryUsage" }) do
         _G[name] = nil
@@ -715,76 +717,297 @@ end)
 
 io.write("Positioning\n")
 
-local function fakeBar(top, centerX, visible)
-    local f = { _top = top, _cx = centerX, _visible = visible ~= false }
-    function f:IsVisible() return self._visible end
-    function f:GetTop() return self._top end
-    function f:GetCenter() return self._cx, 0 end
-    function f:GetEffectiveScale() return 1 end
+-- Screen 1920x1080 at scale 1. Default bottom layout used below:
+--   MainActionBar        x 674-1246, y  40- 90
+--   XP container         x 674-1246, y  92-104 (bars: xp, rep)
+--   MultiBarBottomLeft   x 674-1246, y 106-156 (Action Bar 2)
+local function mkBar(name, l, b, w, h, shown)
+    local f = CreateFrame("Frame", name, UIParent)
+    f:SetMockRect(l, b, w, h)
+    if shown == false then f:Hide() end
     return f
 end
 
-test("auto position sits just above the detected action bars", function()
-    local ns2 = boot(nil, { setup = function()
-        MainActionBar = fakeBar(60, 960)
-        MultiBarBottomLeft = fakeBar(105, 960)
-        MultiBarBottomRight = fakeBar(150, 960, false) -- hidden bars are ignored
-    end })
-    local ox, oy, found = ns2.Bunny.DetectDefaultOffset()
-    eq(found, true); eq(ox, 0); eq(oy, 107)
-    local _, _, _, x, y = BunnyBarFrame:GetPoint(1)
-    eq(x, 0); eq(y, 107)
-end)
+local function stdLayout(cfg)
+    cfg = cfg or {}
+    return function()
+        mkBar("MainActionBar", 674, 40, 572, 50, cfg.main ~= false)
+        mkBar("MultiBarBottomLeft", 674, 106, 572, 50, cfg.ab2 ~= false)
+        local xpOn, repOn = cfg.xp ~= false, cfg.rep == true
+        local c = mkBar("MainStatusTrackingBarContainer", 674, 92, 572, 12,
+            cfg.container ~= nil and cfg.container or (xpOn or repOn))
+        c.bars = { xp = CreateFrame("Frame", nil, c), rep = CreateFrame("Frame", nil, c) }
+        c.bars.xp:SetShown(xpOn)
+        c.bars.rep:SetShown(repOn)
+        if cfg.extra then cfg.extra() end
+    end
+end
 
-test("bars moved to the top of the screen are ignored", function()
-    local ns2 = boot(nil, { setup = function() MainActionBar = fakeBar(1000, 960) end })
-    local _, oy, found = ns2.Bunny.DetectDefaultOffset()
-    eq(found, false); eq(oy, 100)
-end)
-
-test("secret geometry values fall back safely", function()
-    local SECRET = setmetatable({}, { __lt = function() error("secret compare") end })
-    local ns2 = boot(nil, { setup = function()
-        issecretvalue = function(v) return v == SECRET end
-        MainActionBar = fakeBar(SECRET, 960)
-    end })
-    local _, oy, found = ns2.Bunny.DetectDefaultOffset()
-    eq(found, false); eq(oy, 100)
-end)
-
-test("secret visibility flags fall back safely", function()
-    local SECRET = setmetatable({}, { __index = function() error("secret test") end })
-    local ns2 = boot(nil, { setup = function()
-        issecretvalue = function(v) return v == SECRET end
-        local bar = fakeBar(60, 960)
-        function bar:IsVisible() return SECRET end
-        MainActionBar = bar
-    end })
-    local _, oy, found = ns2.Bunny.DetectDefaultOffset()
-    eq(found, false); eq(oy, 100)
-end)
-
-test("erroring bar APIs are contained", function()
-    local ns2 = boot(nil, { setup = function()
-        local bar = fakeBar(60, 960)
-        function bar:GetTop() error("forbidden") end
-        MainMenuBar = bar
-    end })
-    local _, oy, found = ns2.Bunny.DetectDefaultOffset()
-    eq(found, false); eq(oy, 100)
-end)
-
-test("Edit Mode layout changes re-place an auto-positioned bunny only", function()
-    local ns2 = boot(nil, { setup = function() MainActionBar = fakeBar(60, 960) end })
-    MainActionBar._top = 80
-    mock.fire("EDIT_MODE_LAYOUTS_UPDATED")
+local function anchorY()
     local _, _, _, _, y = BunnyBarFrame:GetPoint(1)
-    eq(y, 82)
-    BunnyBarDB.point, BunnyBarDB.relativePoint, BunnyBarDB.x, BunnyBarDB.y = "BOTTOM", "BOTTOM", 0, 400
-    ns2.Bunny:ApplyPosition()
+    return y
+end
+local function anchorX()
+    local _, _, _, x = BunnyBarFrame:GetPoint(1)
+    return x
+end
+
+test("Action Bar 2 on, XP bar on: above Action Bar 2", function()
+    local ns2 = boot(nil, { setup = stdLayout() })
+    local ox, oy, found, anchor = ns2.Bunny.DetectDefaultOffset()
+    eq(found, true); eq(anchor, "MultiBarBottomLeft"); eq(ox, 0); eq(oy, 158)
+    eq(anchorY(), 158); eq(anchorX(), 0)
+end)
+
+test("Action Bar 2 off, XP bar on: directly above the XP bar", function()
+    boot(nil, { setup = stdLayout({ ab2 = false }) })
+    local _, oy, found, anchor = ns.Placement.Detect(480)
+    eq(found, true); eq(anchor, "MainStatusTrackingBarContainer"); eq(oy, 106)
+    eq(anchorY(), 106)
+end)
+
+test("Action Bar 2 off, XP bar off: above the main action bar", function()
+    local ns2 = boot(nil, { setup = stdLayout({ ab2 = false, xp = false }) })
+    local _, oy, _, anchor = ns2.Placement.Detect(480)
+    eq(anchor, "MainActionBar"); eq(oy, 92); eq(anchorY(), 92)
+end)
+
+test("XP bar hidden but reputation bar shown: above the rep bar", function()
+    local ns2 = boot(nil, { setup = stdLayout({ ab2 = false, xp = false, rep = true }) })
+    local _, oy, _, anchor = ns2.Placement.Detect(480)
+    eq(anchor, "MainStatusTrackingBarContainer"); eq(oy, 106)
+end)
+
+test("legacy XP / reputation frames are recognised", function()
+    local ns2 = boot(nil, { setup = function()
+        mkBar("MainMenuBar", 674, 0, 1024, 53)
+        mkBar("MainMenuExpBar", 674, 53, 1024, 10, false)
+        mkBar("ReputationWatchBar", 674, 53, 1024, 8)
+    end })
+    local _, oy, _, anchor = ns2.Placement.Detect(480)
+    eq(anchor, "ReputationWatchBar"); eq(oy, 63)
+end)
+
+test("a visible but empty status container is ignored", function()
+    local ns2 = boot(nil, { setup = stdLayout({ ab2 = false, xp = false, rep = false, container = true }) })
+    local _, oy, _, anchor = ns2.Placement.Detect(480)
+    eq(anchor, "MainActionBar"); eq(oy, 92)
+end)
+
+test("all candidate bars hidden or missing: safe fallback", function()
+    local ns2 = boot(nil, { setup = stdLayout({ main = false, ab2 = false, xp = false }) })
+    local ox, oy, found, anchor = ns2.Placement.Detect(480)
+    eq(found, false); eq(anchor, nil); eq(ox, 0); eq(oy, 100)
+    eq(anchorY(), 100)
+    local ns3 = boot(nil)
+    eq(select(3, ns3.Placement.Detect(480)), false)
+    eq(anchorY(), 100)
+end)
+
+test("invalid or unavailable geometry is skipped, next bar used", function()
+    local SECRET = setmetatable({}, { __lt = function() error("secret compare") end })
+    local ns2 = boot(nil, { setup = stdLayout({ extra = function()
+        issecretvalue = function(v) return v == SECRET end
+        -- Action Bar 2: secret top. Bar 3: errors. Bar 6: nil geometry.
+        -- Bar 7: zero size. Override bar: NaN. XP container is valid.
+        function MultiBarBottomLeft:GetTop() return SECRET end
+        local b3 = mkBar("MultiBarBottomRight", 674, 200, 572, 50)
+        function b3:GetLeft() error("forbidden") end
+        local b6 = mkBar("MultiBar5", 674, 200, 572, 50)
+        function b6:GetTop() return nil end
+        mkBar("MultiBar6", 674, 300, 0, 0)
+        local ov = mkBar("OverrideActionBar", 674, 0, 572, 50)
+        function ov:GetBottom() return 0 / 0 end
+        local tall = mkBar("MultiBar7", 674, 0, 572, 400)
+        tall:Show()
+    end }) })
+    local _, oy, _, anchor, results = ns2.Placement.Detect(480)
+    eq(anchor, "MainStatusTrackingBarContainer"); eq(oy, 106)
+    local reasons = {}
+    for _, r in ipairs(results) do reasons[r.name] = r.reason end
+    eq(reasons.MultiBarBottomLeft, "no geometry")
+    eq(reasons.MultiBarBottomRight, "geometry error")
+    eq(reasons.MultiBar5, "no geometry")
+    eq(reasons.MultiBar6, "zero size")
+    eq(reasons.OverrideActionBar, "no geometry")
+    eq(reasons.MultiBar7, "too tall")
+end)
+
+test("secret visibility flags are skipped safely", function()
+    local SECRET = setmetatable({}, { __index = function() error("secret test") end })
+    local ns2 = boot(nil, { setup = stdLayout({ extra = function()
+        issecretvalue = function(v) return v == SECRET end
+        function MultiBarBottomLeft:IsVisible() return SECRET end
+    end }) })
+    local _, oy, _, anchor = ns2.Placement.Detect(480)
+    eq(anchor, "MainStatusTrackingBarContainer"); eq(oy, 106)
+end)
+
+test("custom bar positions: follows a moved main bar, ignores off-track bars", function()
+    local ns2 = boot(nil, { setup = stdLayout({ ab2 = false, extra = function()
+        -- Edit Mode: main bar + XP moved left, Action Bar 3 parked bottom-right,
+        -- Action Bar 6 moved to the top of the screen.
+        MainActionBar:SetMockRect(200, 40, 572, 50)
+        MainStatusTrackingBarContainer:SetMockRect(200, 92, 572, 12)
+        mkBar("MultiBarBottomRight", 1400, 40, 400, 120)
+        mkBar("MultiBar5", 674, 900, 572, 50)
+    end }) })
+    local ox, oy, _, anchor, results = ns2.Placement.Detect(480)
+    eq(anchor, "MainStatusTrackingBarContainer")
+    eq(ox, 486 - 960, "centred on the moved main bar"); eq(oy, 106)
+    local reasons = {}
+    for _, r in ipairs(results) do reasons[r.name] = r.reason end
+    eq(reasons.MultiBarBottomRight, "off track")
+    eq(reasons.MultiBar5, "not at bottom")
+    -- A wider track reaches the side bar, which is the highest.
+    eq(slash("width 2000"), true)
+    _, oy, _, anchor = ns2.Placement.Detect(2000)
+    eq(anchor, "MultiBarBottomRight"); eq(oy, 162); eq(anchorY(), 162)
+end)
+
+test("without a main bar the bunny centres on the bar it sits on", function()
+    local ns2 = boot(nil, { setup = stdLayout({ main = false, ab2 = false, extra = function()
+        MainStatusTrackingBarContainer:SetMockRect(800, 0, 400, 12)
+    end }) })
+    local ox, oy, _, anchor = ns2.Placement.Detect(480)
+    eq(anchor, "MainStatusTrackingBarContainer"); eq(ox, 1000 - 960); eq(oy, 14)
+end)
+
+test("UI scale: bar coordinates are converted to UIParent units", function()
+    local ns2 = boot(nil, { setup = stdLayout({ ab2 = false }) })
+    eq(anchorY(), 106)
+    -- UI scale 0.8: UIParent grows to 2400x1350 units; a bar that keeps an
+    -- effective scale of 1.0 now spans more UIParent units.
+    UIParent._scale = 0.8
+    UIParent:SetSize(2400, 1350)
+    MainActionBar._scale, MainStatusTrackingBarContainer._scale = 0.8, 1.0
+    mock.fire("UI_SCALE_CHANGED")
+    mock.advance(0.3)
+    local _, oy, _, anchor = ns2.Placement.Detect(480)
+    eq(anchor, "MainStatusTrackingBarContainer")
+    eq(oy, 130 + 2, "104 * 1.0 / 0.8 + gap"); eq(anchorY(), 132)
+    UIParent._scale = 1
+    UIParent:SetSize(1920, 1080)
+end)
+
+test("toggling Action Bar 2 re-places the bunny (coalesced, deferred)", function()
+    local ns2 = boot(nil, { setup = stdLayout() })
+    mock.advance(1.05)
+    eq(anchorY(), 158)
+    MultiBarBottomLeft:Hide()
+    MultiBarBottomLeft:Show()
+    MultiBarBottomLeft:Hide()
+    eq(ns2.Placement.IsRefreshPending(), true)
+    eq(mock.pendingTimers(), 3, "1 refresh + bunny idle/fidget timers") -- refresh is coalesced
+    eq(anchorY(), 158, "not moved until the deferred refresh")
+    mock.advance(0.3)
+    eq(anchorY(), 106, "now above the XP bar")
+    MultiBarBottomLeft:Show()
+    mock.advance(0.3)
+    eq(anchorY(), 158)
+end)
+
+test("XP bar appearing / disappearing re-places the bunny", function()
+    boot(nil, { setup = stdLayout({ ab2 = false }) })
+    mock.advance(1.05)
+    eq(anchorY(), 106)
+    -- Level cap: XP bar inside the container hides (container stays shown).
+    MainStatusTrackingBarContainer.bars.xp:Hide()
+    mock.fire("PLAYER_LEVEL_UP", 80)
+    mock.advance(0.3)
+    eq(anchorY(), 92, "back above the main bar")
+    -- Reputation tracking shows a bar again.
+    MainStatusTrackingBarContainer.bars.rep:Show()
+    mock.advance(0.3)
+    eq(anchorY(), 106)
+end)
+
+test("level-up and Edit Mode events trigger a refresh", function()
+    local ns2 = boot(nil, { setup = stdLayout() })
+    mock.advance(1.05)
+    for _, ev in ipairs({ "PLAYER_LEVEL_UP", "ENABLE_XP_GAIN", "DISABLE_XP_GAIN",
+        "EDIT_MODE_LAYOUTS_UPDATED", "UI_SCALE_CHANGED", "DISPLAY_SIZE_CHANGED",
+        "PLAYER_ENTERING_WORLD", "UPDATE_EXPANSION_LEVEL" }) do
+        MultiBarBottomLeft:SetMockRect(674, 106, 572, 60) -- change silently
+        mock.fire(ev)
+        eq(ns2.Placement.IsRefreshPending(), true, ev)
+        mock.advance(0.3)
+        eq(anchorY(), 168, ev)
+        MultiBarBottomLeft:SetMockRect(674, 106, 572, 50)
+        mock.fire(ev); mock.advance(0.3)
+        eq(anchorY(), 158, ev)
+    end
+end)
+
+test("unchanged results do not re-anchor the frame", function()
+    boot(nil, { setup = stdLayout() })
+    mock.advance(1.05)
+    local calls = 0
+    local orig = BunnyBarFrame.SetPoint
+    BunnyBarFrame.SetPoint = function(...) calls = calls + 1; return orig(...) end
+    for _ = 1, 5 do mock.fire("PLAYER_ENTERING_WORLD"); mock.advance(0.3) end
+    eq(calls, 0)
+    BunnyBarFrame.SetPoint = nil
+end)
+
+test("manual position overrides automatic placement until reset", function()
+    local ns2 = boot(nil, { setup = stdLayout() })
+    mock.advance(1.05)
+    slash("unlock")
+    local f = BunnyBarFrame
+    f._scripts.OnDragStart(f)
+    f._dragLeft, f._dragBottom = 300, 500
+    f._scripts.OnDragStop(f)
+    f._dragLeft, f._dragBottom = nil, nil
+    slash("lock")
+    eq(anchorY(), 500)
+    MultiBarBottomLeft:Hide()
     mock.fire("EDIT_MODE_LAYOUTS_UPDATED")
-    _, _, _, _, y = BunnyBarFrame:GetPoint(1)
-    eq(y, 400)
+    eq(ns2.Placement.IsRefreshPending(), false, "no refresh scheduled for a manual position")
+    mock.advance(0.5)
+    eq(anchorY(), 500, "manual position kept")
+    slash("reset")
+    eq(BunnyBarDB.point, nil)
+    eq(anchorY(), 106, "reset recalculates immediately (AB2 hidden -> above XP)")
+end)
+
+test("saved manual position is restored on reload", function()
+    boot({ point = "BOTTOM", relativePoint = "BOTTOM", x = -50, y = 400 }, { setup = stdLayout() })
+    mock.advance(1.05)
+    eq(anchorY(), 400); eq(anchorX(), -50)
+end)
+
+test("Alt+Z: no refresh while hidden, correct position when shown", function()
+    local ns2 = boot(nil, { setup = stdLayout() })
+    mock.advance(1.05)
+    UIParent:Hide()
+    eq(ns2.Placement.IsRefreshPending(), false)
+    eq(mock.pendingTimers(), 0)
+    MultiBarBottomLeft:Hide() -- changed while the UI was hidden
+    UIParent:Show()
+    eq(anchorY(), 106, "re-placed immediately on show, no fallback flash")
+end)
+
+test("/bunny bars reports the anchor and each candidate", function()
+    boot(nil, { setup = stdLayout({ ab2 = false }) })
+    local before = #mock.chat
+    slash("bars")
+    local text = table.concat(mock.chat, "\n", before + 1)
+    truthy(text:find("auto position: above MainStatusTrackingBarContainer"), text)
+    truthy(text:find("MultiBarBottomLeft: hidden"), text)
+    truthy(text:find("MainActionBar: visible, top 90"), text)
+    truthy(text:find("<%- anchor"), text)
+    truthy(text:find("not present on this client:.*MainMenuBar"), text)
+end)
+
+test("bar hooks are installed once and never replace Blizzard scripts", function()
+    local ns2 = boot(nil, { setup = stdLayout() })
+    local own = function() end
+    MultiBarBottomLeft:SetScript("OnShow", own)
+    ns2.Placement.HookBars(); ns2.Placement.HookBars()
+    eq(#MultiBarBottomLeft._hooks.OnShow, 1)
+    eq(#MainStatusTrackingBarContainer.bars.xp._hooks.OnHide, 1)
+    eq(MultiBarBottomLeft:GetScript("OnShow"), own)
 end)
 
 test("unknown layout events on older clients do not break loading", function()

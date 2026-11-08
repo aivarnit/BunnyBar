@@ -6,17 +6,29 @@ local addonName, ns = ...
 local events = CreateFrame("Frame")
 ns.eventFrame = events
 
--- Events that only matter while the bunny uses automatic placement. They are
--- all one-shot layout notifications, not periodic polling. Registered with
--- pcall because registering an event the client doesn't know raises an error.
-local LAYOUT_EVENTS = { "EDIT_MODE_LAYOUTS_UPDATED", "UI_SCALE_CHANGED", "DISPLAY_SIZE_CHANGED" }
+-- Events that can change which bottom bars are visible or where they are.
+-- They are occasional notifications, not polling; each one only requests a
+-- coalesced, deferred re-placement (see Placement.lua), which does nothing
+-- for a manually positioned bunny. Bar show/hide (e.g. toggling Action Bar 2,
+-- the XP bar appearing) is caught by OnShow/OnHide hooks on the bars.
+-- Registered with pcall because registering an unknown event raises an error.
+local LAYOUT_EVENTS = {
+    "EDIT_MODE_LAYOUTS_UPDATED", -- Edit Mode moved / toggled bars
+    "UI_SCALE_CHANGED",
+    "DISPLAY_SIZE_CHANGED",
+    "PLAYER_ENTERING_WORLD",     -- reloads, zoning (bar layouts can change)
+    "PLAYER_LEVEL_UP",           -- XP bar may hide at the level cap
+    "ENABLE_XP_GAIN",            -- XP bar shown again
+    "DISABLE_XP_GAIN",           -- XP bar hidden
+    "UPDATE_EXPANSION_LEVEL",    -- level cap raised: XP bar returns
+}
 
 local function tryRegister(event)
     return pcall(events.RegisterEvent, events, event)
 end
 
-local function refreshAutoPosition()
-    if ns.db and ns.Bunny:IsAutoPositioned() then ns.Bunny:ApplyPosition() end
+local function requestRefresh()
+    ns.Placement.RequestRefresh()
 end
 
 local handlers = {}
@@ -33,18 +45,17 @@ function handlers.PLAYER_LOGIN()
     local db = ns.db or ns.Config.Load()
     local bunny = ns.Bunny
     bunny:Create()
+    ns.Placement.HookBars()
     bunny:ApplyPosition()
     bunny:SetLocked(db.locked)
     bunny:SetShown(db.shown)
     for i = 1, #LAYOUT_EVENTS do tryRegister(LAYOUT_EVENTS[i]) end
     -- Edit Mode applies the action bar layout shortly after login; place the
     -- bunny again once that has settled.
-    C_Timer.After(1, refreshAutoPosition)
+    C_Timer.After(1, ns.Placement.Refresh)
 end
 
-handlers.EDIT_MODE_LAYOUTS_UPDATED = refreshAutoPosition
-handlers.UI_SCALE_CHANGED = refreshAutoPosition
-handlers.DISPLAY_SIZE_CHANGED = refreshAutoPosition
+for i = 1, #LAYOUT_EVENTS do handlers[LAYOUT_EVENTS[i]] = requestRefresh end
 
 events:SetScript("OnEvent", function(_, event, ...)
     local handler = handlers[event]
