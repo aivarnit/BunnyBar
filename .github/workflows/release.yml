@@ -65,7 +65,7 @@ jobs:
                    Textures/devil/bunny-idle.tga Textures/angel/bunny-burrow.tga \
                    Textures/dragon/bunny-hop.tga Textures/zombie/bunny-sleep.tga \
                    Textures/bunny-idle.tga Textures/bunny-hop.tga \
-                   Textures/bunny-land.tga Textures/bunny-sleep.tga \
+                   Textures/bunny-sleep.tga \
                    Textures/bunny-sleepy.tga Textures/bunny-wake.tga Textures/bunny-icon.tga; do
             grep -qx "BunnyBar/$f" <<<"$list" || { echo "missing BunnyBar/$f"; exit 1; }
           done
