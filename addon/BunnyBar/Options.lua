@@ -34,6 +34,13 @@ local syncing = false -- true while Refresh() writes into the controls
 local SQUARE = 150
 local SLIDER_W, SLIDER_H = 150, 14
 
+-- Right column layout. Section positions are derived from the number of
+-- size presets, so adding presets can never overlap the next section.
+local RIGHT_X, TOP_Y = 320, -70
+local ROW = 22           -- radio / checkbox row height
+local SECTION_GAP = 24   -- space between sections
+Options.layout = {}
+
 ----------------------------------------------------------------------------
 -- Registration and opening
 ----------------------------------------------------------------------------
@@ -349,14 +356,15 @@ local function buildSize(x, y)
     for i, p in ipairs(ns.Config.SIZE_PRESETS) do
         local rb = make("CheckButton", panel, "UIRadioButtonTemplate")
         rb:SetSize(18, 18)
-        rb:SetPoint("TOPLEFT", panel, "TOPLEFT", x, y - 22 - (i - 1) * 22)
+        rb:SetPoint("TOPLEFT", panel, "TOPLEFT", x, y - ROW - (i - 1) * ROW)
         rb.presetSize = p.size
         rb:SetScript("OnClick", presetClick)
         text(panel, "GameFontHighlight", ("%s (%d)"):format(p.label, p.size), "LEFT", rb, "RIGHT", 4, 0)
         c.sizes[i] = rb
     end
-    c.customSize = text(panel, "GameFontDisableSmall", "", "TOPLEFT", panel, "TOPLEFT",
-        x, y - 22 - #ns.Config.SIZE_PRESETS * 22 - 2)
+    local customY = y - ROW - #ns.Config.SIZE_PRESETS * ROW - 2
+    c.customSize = text(panel, "GameFontDisableSmall", "", "TOPLEFT", panel, "TOPLEFT", x, customY)
+    return customY - 12 -- bottom of the section (custom label ~12 high)
 end
 
 local function earClick(self)
@@ -380,6 +388,7 @@ local function buildPortraits(x, y)
         text(panel, "GameFontHighlight", row.label, "LEFT", cb, "RIGHT", 2, 0)
         c.ears[row.key] = cb
     end
+    return y - 20 - #rows * 26
 end
 
 -- Future cosmetics: only informational until more than one choice exists,
@@ -403,10 +412,14 @@ function Options.Build()
     text(panel, "GameFontHighlightSmall",
         "A tiny pixel-art bunny that lives above your action bar. Changes apply immediately.",
         "TOPLEFT", panel, "TOPLEFT", 16, -40)
-    buildColour(16, -70)
-    buildSize(320, -70)
-    buildPortraits(320, -200)
-    buildStyles(320, -290)
+    buildColour(16, TOP_Y)
+    local L = Options.layout
+    L.sizeTop = TOP_Y
+    L.sizeBottom = buildSize(RIGHT_X, L.sizeTop)
+    L.portraitTop = L.sizeBottom - SECTION_GAP
+    L.portraitBottom = buildPortraits(RIGHT_X, L.portraitTop)
+    L.stylesTop = L.portraitBottom - SECTION_GAP
+    buildStyles(RIGHT_X, L.stylesTop)
 end
 
 function Options.IsBuilt()

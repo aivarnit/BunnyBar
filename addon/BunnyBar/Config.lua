@@ -56,8 +56,17 @@ Config.SIZE_PRESETS = {
     { key = "tiny",    label = "Tiny",    size = 16 },
     { key = "small",   label = "Small",   size = 32 },
     { key = "regular", label = "Regular", size = 64 },
-    { key = "large",   label = "Large",   size = 128 },
+    { key = "large",   label = "Large",   size = 96 },
+    { key = "huge",    label = "Huge",    size = 128 },
 }
+
+-- "16, 32, 64, 96 and 128"
+function Config.PresetSizesText()
+    local sizes = {}
+    for i, p in ipairs(Config.SIZE_PRESETS) do sizes[i] = tostring(p.size) end
+    local last = table.remove(sizes)
+    return table.concat(sizes, ", ") .. " and " .. last
+end
 
 function Config.PresetForSize(size)
     for _, p in ipairs(Config.SIZE_PRESETS) do
@@ -230,7 +239,7 @@ local HELP = {
     "|cffffd200/bunny lock|r / |cffffd200unlock|r - lock position or enable dragging",
     "|cffffd200/bunny reset|r - restore default settings and position",
     "|cffffd200/bunny color <#RRGGBB|reset>|r - fur colour",
-    "|cffffd200/bunny size <16-128>|r - sprite size (presets 16, 32, 64, 128)",
+    "|cffffd200/bunny size <16-128>|r - sprite size (presets: " .. Config.PresetSizesText() .. ")",
     "|cffffd200/bunny ears <player|party> <on|off>|r - bunny ears on portraits",
     "|cffffd200/bunny speed <0.25-4>|r - hop speed multiplier (default 1.0)",
     "|cffffd200/bunny interval <2-120>|r - average seconds between hops (default 8)",
@@ -368,7 +377,7 @@ function Config.HandleSlash(msg)
         Config.Set(key, value)
         local extra = ""
         if key == "size" and not Config.PresetForSize(value) then
-            extra = " (custom size; presets are 16, 32, 64 and 128)"
+            extra = " (custom size; presets are " .. Config.PresetSizesText() .. ")"
         end
         ns.Print(("%s set to %s.%s"):format(limit.label, fmt(value), extra))
         return true

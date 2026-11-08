@@ -20,7 +20,7 @@ It hops back and forth on its own little track, blinks, twitches its ears and so
 - **Finds its spot by itself**: it sits just above the highest visible bar at the bottom of the screen, whether that's Action Bar 2/3, the XP or reputation bar, or the main action bar. It moves on its own when you toggle bars, gain or lose the XP bar, change UI scale or edit your layout.
 - **Options panel**: **Esc → Options → AddOns → BunnyBar** (or `/bunny options`) has a colour picker, size presets and portrait accessories. Everything applies instantly.
 - **Any fur colour**: pick from a saturation/brightness square, a hue slider and a brightness slider, or type a hex code such as `#FFB6C1`. Only the fur changes: eyes, nose, pink inner ears, outlines and shading stay put in every animation frame.
-- **Size presets**: Tiny (16), Small (32), Regular (64, the default for new installs) or Large (128). `/bunny size` still accepts any whole size from 16 to 128.
+- **Size presets**: Tiny (16), Small (32), Regular (64, the default for new installs), Large (96) or Huge (128). `/bunny size` still accepts any whole size from 16 to 128.
 - **Bunny ears on portraits**: optional pixel-art ears on top of your own portrait and your party members' portraits, in the bunny's fur colour. They're purely local and cosmetic, and click-through.
 - **Configurable**: speed, hop interval, track width and hop height too. You can drag it anywhere, and settings are saved per account.
 - **Lightweight**: no per-frame work while sitting still. Updates run only during the ~0.4 s of each hop. No libraries, no network, about 230 KB of textures.
@@ -52,7 +52,7 @@ Step-by-step instructions, including how to create a missing `AddOns` folder and
 | `/bunny lock` | Lock the position (click-through) |
 | `/bunny unlock` | Highlight the track and allow dragging |
 | `/bunny reset` | Restore all default settings and position |
-| `/bunny size 64` | Sprite size, 16–128. Presets: 16, 32, 64 (default), 128 |
+| `/bunny size 64` | Sprite size, 16–128. Presets: 16, 32, 64 (default), 96, 128 |
 | `/bunny ears player off` | Turn portrait ears `on`/`off` for `player` or `party` |
 | `/bunny speed 1.0` | Hop speed multiplier, 0.25–4 (default 1.0) |
 | `/bunny interval 8` | Average seconds between hops, 2–120 (default 8) |
@@ -125,7 +125,7 @@ The code layout and state machine are described in [docs/ARCHITECTURE.md](docs/A
 
 - **v0.2 features aren't verified in game yet.** These are the options panel, colours, size presets and portrait ears. The animation, napping and automatic placement have passed in-game testing on WoW Forever. Everything is also checked offline against a mock of the WoW API. See the [in-game checklist](docs/ARCHITECTURE.md#manual-in-game-test-checklist).
 - **Portrait ears** need Blizzard's default unit frames. Raid-style party frames have no portraits, so no ears appear there. Replacement unit frame addons aren't supported yet.
-- **Very small sizes:** at 16 the 32-pixel art is scaled down 2×, so single-pixel details (eye shine, mouth) can drop out. Sizes 32, 64 and 128 are pixel-exact at UI scale 1.
+- **Very small sizes:** at 16 the 32-pixel art is scaled down 2×, so single-pixel details (eye shine, mouth) can drop out. Sizes 32, 64, 96 and 128 are whole multiples of the art (1×, 2×, 3×, 4×), so they're pixel-exact at UI scale 1.
 - **Automatic placement relies on Blizzard frame names that haven't been confirmed on Forever.** It knows the modern and legacy names for the bottom action bars and the XP/reputation bars. If Forever uses different names, those bars are ignored, and if none are found the bunny falls back to 100 units above the bottom of the screen. `/bunny bars` shows what was detected. You can always drag it with `/bunny unlock`.
 - Placement reacts within about 0.2 s to bars being shown or hidden, to Edit Mode or the Settings panel closing, and to layout events, then re-checks briefly while Blizzard's layout settles. A bar that changes *size* with none of these happening (rare) is picked up on the next one, or on `/reload`.
 - Bars that are off to the side, outside the bunny's track, are deliberately ignored.

@@ -25,7 +25,7 @@ Run one without a value to print the current setting and its allowed range, for 
 
 | Command | Range | Default | Meaning |
 |---|---|---|---|
-| `/bunny size 64` | 16–128, whole numbers | 64 (32 for installs from v0.1) | Sprite size in UI units. The options panel offers the presets Tiny 16, Small 32, Regular 64 and Large 128. Any other whole size works here and shows as **Custom** in the panel. The art is 32×32 pixels, so 32, 64 and 128 are the sharpest at UI scale 1. |
+| `/bunny size 64` | 16–128, whole numbers | 64 (32 for installs from v0.1) | Sprite size in UI units. The options panel offers the presets Tiny 16, Small 32, Regular 64, Large 96 and Huge 128. Any other whole size works here and shows as **Custom** in the panel. The art is 32×32 pixels, so 32, 64, 96 and 128 (whole multiples) are the sharpest at UI scale 1. |
 | `/bunny speed 1.0` | 0.25–4 | 1.0 | Animation speed multiplier. At 2.0 a hop takes 0.2 s instead of 0.4 s. It doesn't change how often the bunny hops. |
 | `/bunny interval 8` | 2–120 | 8 | *Average* seconds between hop journeys. Each wait is random, between 50 % and 150 % of this value (default 4–12 s). |
 | `/bunny width 480` | 64–2000, whole numbers | 480 | Width of the horizontal track the bunny roams. |

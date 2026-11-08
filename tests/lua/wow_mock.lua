@@ -7,6 +7,7 @@
 -- raises an error, which catches typos in API names we rely on.
 
 local M = {}
+local unpack = unpack or table.unpack -- Lua 5.1 (WoW) vs 5.2+
 
 -- Templates the mock client pretends not to have (tests can add names).
 M.MISSING_TEMPLATES = {}
@@ -161,7 +162,21 @@ function Region:SetTextColor(r, g, b, a) self._textColor = { r, g, b, a } end
 -- Frame stacking / protection
 function Region:SetFrameLevel(l) self._level = l end
 function Region:GetFrameLevel() return self._level or 1 end
-function Region:GetFrameStrata() return self._strata or "MEDIUM" end
+-- Like the client: a frame without its own strata uses its parent's.
+function Region:GetFrameStrata()
+    if self._strata then return self._strata end
+    if self._parent then return self._parent:GetFrameStrata() end
+    return "MEDIUM"
+end
+function Region:GetParent() return self._parent end
+-- Frames only (textures and font strings are regions, not children).
+function Region:GetChildren()
+    local out = {}
+    for _, ch in ipairs(self._children) do
+        if ch._kind ~= "Texture" and ch._kind ~= "FontString" then out[#out + 1] = ch end
+    end
+    return unpack(out)
+end
 function Region:IsProtected() return self._protected or false, false end
 
 -- Sliders: SetValue fires OnValueChanged like the client (only on change).

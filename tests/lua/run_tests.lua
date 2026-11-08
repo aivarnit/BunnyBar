@@ -1516,7 +1516,7 @@ test("missing widget templates degrade to plain widgets", function()
         mock.MISSING_TEMPLATES[t] = true
     end
     local ns2, c = bootPanel(nil)
-    truthy(ns2.Options.IsBuilt()); eq(c.hex._template, nil); eq(#c.sizes, 4)
+    truthy(ns2.Options.IsBuilt()); eq(c.hex._template, nil); eq(#c.sizes, 5)
     mock.MISSING_TEMPLATES = {}
 end)
 
@@ -1580,9 +1580,11 @@ test("size presets: radios, custom sizes, slash sync", function()
     end
     eq(checked(), "2", "Small for an existing 32 user")
     eq(c.customSize:IsShown(), false)
-    c.sizes[4]:Click()
-    eq(BunnyBarDB.size, 128); eq(checked(), "4")
+    c.sizes[5]:Click()
+    eq(BunnyBarDB.size, 128); eq(checked(), "5", "Huge")
     eq(bunnyLayers():GetWidth(), 128, "applies immediately")
+    c.sizes[4]:Click()
+    eq(BunnyBarDB.size, 96); eq(checked(), "4", "Large")
     eq(slash("size 48"), true)
     truthy(lastChat():find("custom size"))
     eq(BunnyBarDB.size, 48, "custom size kept, not snapped to a preset")
@@ -1591,6 +1593,66 @@ test("size presets: radios, custom sizes, slash sync", function()
     eq(checked(), "1"); eq(c.customSize:IsShown(), false)
     c.sizes[3]:Click()
     eq(BunnyBarDB.size, 64)
+end)
+
+test("five size presets in order; default stays Regular 64", function()
+    local ns2 = boot(nil)
+    local P = ns2.Config.SIZE_PRESETS
+    local got = {}
+    for i, p in ipairs(P) do got[i] = p.label .. "=" .. p.size end
+    eq(table.concat(got, ","), "Tiny=16,Small=32,Regular=64,Large=96,Huge=128")
+    eq(ns2.Config.DEFAULTS.size, 64); eq(BunnyBarDB.size, 64)
+    eq(ns2.Config.PresetForSize(96).label, "Large"); eq(ns2.Config.PresetForSize(128).label, "Huge")
+    eq(ns2.Config.PresetForSize(48), nil)
+    eq(ns2.Config.PresetSizesText(), "16, 32, 64, 96 and 128")
+    local before = #mock.chat
+    slash("")
+    truthy(table.concat(mock.chat, "\n", before + 1):find("presets: 16, 32, 64, 96 and 128"))
+end)
+
+test("saved sizes persist and map onto the new presets", function()
+    local cases = { { 32, 2 }, { 96, 4 }, { 128, 5 }, { 16, 1 }, { 64, 3 } }
+    for _, case in ipairs(cases) do
+        local _, c = bootPanel({ schema = 2, size = case[1] })
+        eq(BunnyBarDB.size, case[1])
+        for i, rb in ipairs(c.sizes) do eq(rb:GetChecked(), i == case[2], case[1] .. " radio " .. i) end
+        eq(c.customSize:IsShown(), false)
+    end
+    -- v0.1 data keeps 32; a v0.2 custom 48 and 100 stay custom.
+    boot({ schema = 1, size = 32 }); eq(BunnyBarDB.size, 32)
+    for _, custom in ipairs({ 48, 100 }) do
+        local _, c = bootPanel({ schema = 2, size = custom })
+        eq(BunnyBarDB.size, custom); truthy(c.customSize:IsShown())
+    end
+    -- A preset chosen in the panel survives a reload.
+    local _, c = bootPanel(nil)
+    c.sizes[4]:Click()
+    local saved = BunnyBarDB
+    boot(saved)
+    eq(BunnyBarDB.size, 96)
+    eq(slash("size 96"), true); eq(lastChat():find("custom"), nil, "96 is a preset now")
+    eq(slash("size 97"), true); truthy(lastChat():find("custom size; presets are 16, 32, 64, 96 and 128"))
+end)
+
+test("five radios fit above the Portrait Accessories section", function()
+    local ns2, c = bootPanel({ schema = 2, size = 48 })
+    local L = ns2.Options.layout
+    local RADIO_H, LABEL_H = 18, 12
+    for i, rb in ipairs(c.sizes) do
+        local _, _, _, _, y = rb:GetPoint(1)
+        truthy(y - RADIO_H > L.portraitTop, "radio " .. i .. " overlaps the portrait section")
+        if i > 1 then
+            local _, _, _, _, prevY = c.sizes[i - 1]:GetPoint(1)
+            truthy(prevY - y >= RADIO_H, "radios " .. (i - 1) .. "/" .. i .. " overlap")
+        end
+    end
+    local _, _, _, _, cy = c.customSize:GetPoint(1)
+    local _, _, _, _, lastY = c.sizes[5]:GetPoint(1)
+    truthy(cy <= lastY - RADIO_H, "custom label below the last radio")
+    truthy(cy - LABEL_H > L.portraitTop, "custom label clear of the portrait section")
+    local _, _, _, _, ey = c.ears.earsPlayer:GetPoint(1)
+    truthy(ey < L.portraitTop, "checkboxes inside the portrait section")
+    truthy(L.stylesTop < L.portraitBottom, "styles below portraits")
 end)
 
 test("portrait checkboxes and /bunny ears stay in sync", function()
@@ -1796,6 +1858,189 @@ test("ears share the bunny's fur colour", function()
     local r = fur:GetVertexColor(); near(r, 0x87 / 255)
     eq(detail._vertex, nil)
     eq(fur._layer, "OVERLAY")
+end)
+
+-- A modern-style player frame: unit frame -> container -> portrait, plus a
+-- ring frame drawn over the portrait and Edit Mode's Selection child.
+local function mkLayeredPlayer(opts)
+    opts = opts or {}
+    local pf = CreateFrame("Button", "PlayerFrame", UIParent)
+    pf:SetMockRect(80, 880, 230, 100)
+    pf._strata, pf._level = opts.strata or "LOW", opts.level or 5
+    local cont = CreateFrame("Frame", nil, pf)
+    cont._level = opts.containerLevel or 6
+    cont._strata = opts.containerStrata
+    pf.PlayerFrameContainer = cont
+    local p = cont:CreateTexture(nil, "BACKGROUND")
+    p:SetMockRect(100, 900, 60, 60)
+    cont.PlayerPortrait = p
+    local ring = CreateFrame("Frame", nil, cont)
+    ring._level = opts.ringLevel or 8
+    pf.Ring = ring
+    local sel = CreateFrame("Frame", nil, pf)
+    sel._strata, sel._level = "DIALOG", 900
+    sel:Hide()
+    pf.Selection = sel
+    return pf
+end
+
+local function earsLayer(ns2)
+    local e = ears(ns2).player
+    return e.overlay:GetFrameStrata(), e.overlay:GetFrameLevel(), e.layerSource
+end
+
+test("layering: above nested portrait frames, not just the unit frame", function()
+    local ns2 = boot(nil, { setup = function()
+        mkLayeredPlayer({ level = 5, containerLevel = 30, ringLevel = 40 })
+    end })
+    local strata, level, src = earsLayer(ns2)
+    eq(strata, "LOW"); eq(level, 50, "ring (40) + 10, not unit frame (5) + 10"); eq(src, "scan")
+end)
+
+test("layering: a container with its own higher strata wins", function()
+    local ns2 = boot(nil, { setup = function()
+        mkLayeredPlayer({ strata = "LOW", level = 200, containerStrata = "MEDIUM", containerLevel = 3, ringLevel = 4 })
+    end })
+    local strata, level = earsLayer(ns2)
+    eq(strata, "MEDIUM", "higher strata beats any level"); eq(level, 14)
+end)
+
+test("layering: hidden frames (Edit Mode selection) are ignored until shown", function()
+    local ns2 = boot(nil, { setup = function() mkLayeredPlayer() end })
+    eq(select(1, earsLayer(ns2)), "LOW")
+    -- In Edit Mode the selection overlay is shown at DIALOG/900.
+    PlayerFrame.Selection:Show()
+    ns2.Ears.Refresh()
+    local strata, level = earsLayer(ns2)
+    eq(strata, "DIALOG"); eq(level, 910)
+    PlayerFrame.Selection:Hide()
+    ns2.Ears.Refresh()
+    eq(select(1, earsLayer(ns2)), "LOW", "back to normal after Edit Mode")
+end)
+
+test("Edit Mode drag: raised frames and new position picked up on drop", function()
+    local ns2 = boot(nil, { setup = function() mkLayeredPlayer({ level = 5, containerLevel = 6, ringLevel = 8 }) end })
+    eq(select(2, earsLayer(ns2)), 18)
+    -- Dragging raises the unit frame (whole subtree re-levelled) and moves it.
+    PlayerFrame._level, PlayerFrame.PlayerFrameContainer._level, PlayerFrame.Ring._level = 505, 506, 508
+    PlayerFrame.PlayerFrameContainer.PlayerPortrait:SetMockRect(400, 600, 60, 60)
+    PlayerFrame.Selection._hooks.OnDragStop[1](PlayerFrame.Selection)
+    mock.advance(0.15)
+    local e = ears(ns2).player
+    eq(e.level, 518, "re-layered above the raised ring")
+    near(e.rect[1], 430); near(e.rect[2], 660 - 6)
+end)
+
+test("Edit Mode exit via EventRegistry triggers a refresh", function()
+    local callbacks = {}
+    local ns2 = boot(nil, { setup = function()
+        mkLayeredPlayer()
+        EventRegistry = { RegisterCallback = function(_, ev, fn, owner) callbacks[ev] = { fn, owner } end }
+    end })
+    truthy(callbacks["EditMode.Exit"] and callbacks["EditMode.Enter"])
+    PlayerFrame.PlayerFrameContainer.PlayerPortrait:SetMockRect(250, 700, 60, 60)
+    local cb = callbacks["EditMode.Exit"]
+    cb[1](cb[2])
+    mock.advance(0.15)
+    near(ears(ns2).player.rect[1], 280)
+    EventRegistry = nil
+end)
+
+test("layering is idempotent: repeated refreshes never ratchet levels", function()
+    local ns2 = boot(nil, { setup = function() mkLayeredPlayer({ ringLevel = 40 }) end })
+    local o = ears(ns2).player.overlay
+    local sets = 0
+    local orig = o.SetFrameLevel
+    o.SetFrameLevel = function(...) sets = sets + 1; return orig(...) end
+    for _ = 1, 20 do ns2.Ears.Refresh(); mock.fire("GROUP_ROSTER_UPDATE"); mock.advance(0.2) end
+    eq(select(2, earsLayer(ns2)), 50); eq(sets, 0, "unchanged layer is not re-applied")
+    o.SetFrameLevel = nil
+end)
+
+test("layering: levels are capped below the client maximum", function()
+    local ns2 = boot(nil, { setup = function() mkLayeredPlayer({ ringLevel = 9995 }) end })
+    eq(select(2, earsLayer(ns2)), 9900)
+end)
+
+test("layering: secret or broken strata/levels fall back safely", function()
+    local SECRET = {}
+    local ns2 = boot(nil, { setup = function()
+        issecretvalue = function(v) return v == SECRET end
+        local pf = mkLayeredPlayer()
+        for _, f in ipairs({ pf, pf.PlayerFrameContainer, pf.Ring, pf.Selection }) do
+            f.GetFrameStrata = function() return SECRET end
+            f.GetFrameLevel = function() error("blocked") end
+        end
+    end })
+    local strata, _, src = earsLayer(ns2)
+    eq(strata, "HIGH"); eq(src, "fallback")
+    eq(ears(ns2).player.shown, true, "ears still shown")
+    -- GetChildren failing: the portrait's owner chain still gives a layer.
+    ns2 = boot(nil, { setup = function()
+        local pf = mkLayeredPlayer({ containerLevel = 30 })
+        pf.GetChildren = function() error("forbidden") end
+    end })
+    local s2, l2 = earsLayer(ns2)
+    eq(s2, "LOW"); eq(l2, 40)
+end)
+
+test("layering never touches Blizzard frames, also in combat", function()
+    local ns2 = boot(nil, { setup = function() mkLayeredPlayer({ ringLevel = 40 }) end })
+    for _, f in ipairs({ PlayerFrame, PlayerFrame.PlayerFrameContainer, PlayerFrame.Ring }) do
+        f.SetFrameLevel = function() error("must not modify Blizzard frames") end
+        f.SetFrameStrata = function() error("must not modify Blizzard frames") end
+        f.SetPoint = function() error("must not modify Blizzard frames") end
+    end
+    mock.combat = true
+    PlayerFrame.Ring._level = 70
+    mock.fire("PLAYER_REGEN_ENABLED") -- refresh path; reads only
+    ns2.Ears.Refresh()
+    eq(select(2, earsLayer(ns2)), 80, "re-layered in combat (our frame is unprotected)")
+    eq(ears(ns2).player.overlay:IsMouseEnabled(), false)
+    mock.combat = false
+end)
+
+test("layering follows UI scale changes and party re-sorts", function()
+    local ns2 = boot(nil, { setup = function()
+        mkLayeredPlayer({ ringLevel = 12 })
+        local party = mkParty(2)
+        party._strata, party._level = "LOW", 3
+        party.MemberFrame1._level = 25
+    end })
+    eq(ears(ns2).party1.level, 35); eq(ears(ns2).party1.strata, "LOW")
+    UIParent._scale = 0.8
+    mock.fire("UI_SCALE_CHANGED")
+    mock.advance(0.15)
+    eq(ears(ns2).player.level, 22, "layer unchanged by scale")
+    near(ears(ns2).player.rect[3], 60, 1e-6, "size follows scale")
+    UIParent._scale = 1
+    -- Re-sort: member 2 now raised above member 1.
+    PartyFrame.MemberFrame2._level = 60
+    mock.fire("GROUP_ROSTER_UPDATE")
+    mock.advance(0.15)
+    eq(ears(ns2).party2.level, 70)
+end)
+
+test("legacy party portrait without a unit frame uses its owner chain", function()
+    local ns2 = boot(nil, { setup = function()
+        local m = CreateFrame("Button", "PartyMemberFrame1", UIParent)
+        m._strata, m._level = "LOW", 7
+        local mp = m:CreateTexture(nil, "BACKGROUND")
+        mp:SetMockRect(30, 700, 37, 37)
+        PartyMemberFrame1Portrait = mp
+    end })
+    eq(ears(ns2).party1.strata, "LOW"); eq(ears(ns2).party1.level, 17)
+end)
+
+test("reload: same layout gives the same layer and position", function()
+    local function run()
+        local ns2 = boot(nil, { setup = function() mkLayeredPlayer({ containerLevel = 30, ringLevel = 40 }) end })
+        local e = ears(ns2).player
+        return e.strata, e.level, e.rect[1], e.rect[2]
+    end
+    local a = { run() }
+    local b = { run() }
+    for i = 1, 4 do eq(a[i], b[i]) end
 end)
 
 test("no per-frame work from ears or options while idle", function()
