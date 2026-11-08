@@ -2368,12 +2368,15 @@ test("hop is frame-rate independent", function()
     local function run(step)
         local ns2, log = oneHop({ seed = 9, step = step })
         local s = ns2.Bunny:GetDebugState()
-        return log[#log].at, s.x, s.hops
+        return log[#log].at, s.x, s.hops, s.airTime
     end
-    local t30, x30, h30 = run(1 / 30)
-    local t144, x144, h144 = run(1 / 144)
+    local t30, x30, h30, air30 = run(1 / 30)
+    local t144, x144, h144, air144 = run(1 / 144)
     eq(x30, x144, "same landing spot"); eq(h30, h144, "same number of hops")
-    near(t30, t144, 0.15, "same duration within frame quantisation")
+    near(air30, air144, 1e-9, "air time doesn't depend on the frame rate")
+    -- Timer phases end on frame boundaries (as in the client), so each of the
+    -- ~5 ground phases per hop may round up by at most one 30 fps frame.
+    near(t30, t144, (h30 * 5 + 2) / 30, "same duration within frame quantisation")
 end)
 
 ----------------------------------------------------------------------------
